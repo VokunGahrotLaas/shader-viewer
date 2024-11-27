@@ -50,7 +50,8 @@ static int handle_key_event([[maybe_unused]] struct appstate* ctx, SDL_Scancode 
 
 SDL_AppResult SDL_AppInit(void** appstate, [[maybe_unused]] int argc, [[maybe_unused]] char** argv)
 {
-	if (!SDL_SetAppMetadata("Example SDL3 Program", "1.0.0", "fr.vokunaav.sdl3")) return SDL_APP_FAILURE;
+	if (!SDL_SetAppMetadata("Example SDL3 Program", "1.0.0", "fr.vokunaav.sdl3"))
+		return SDL_APP_FAILURE;
 
 	const struct
 	{
@@ -65,13 +66,14 @@ SDL_AppResult SDL_AppInit(void** appstate, [[maybe_unused]] int argc, [[maybe_un
 	if (!SDL_Init(SDL_INIT_VIDEO)) return SDL_APP_FAILURE;
 
 	for (size_t i = 0; i < SDL_arraysize(extended_metadata); ++i)
-		if (!SDL_SetAppMetadataProperty(extended_metadata[i].key, extended_metadata[i].value)) return SDL_APP_FAILURE;
+		if (!SDL_SetAppMetadataProperty(extended_metadata[i].key, extended_metadata[i].value))
+			return SDL_APP_FAILURE;
 
 	if (!(*appstate = appstate_init())) return SDL_APP_FAILURE;
 	struct appstate* ctx = *appstate;
 
-	if (!SDL_CreateWindowAndRenderer("Example SDL3 Program", SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT, SDL_WINDOW_BORDERLESS,
-									 &ctx->window, &ctx->renderer))
+	if (!SDL_CreateWindowAndRenderer("Example SDL3 Program", SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT,
+									 SDL_WINDOW_BORDERLESS, &ctx->window, &ctx->renderer))
 		return SDL_APP_FAILURE;
 
 	ctx->last_step = SDL_GetTicks();

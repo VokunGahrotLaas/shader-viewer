@@ -1,10 +1,11 @@
 # options
 builddir = build
 mode = debug
-asan = true
+sanitize = false
 lto = false
 std = gnu23
 args =
+target = gnu
 O = 0
 
 CC = gcc
@@ -12,19 +13,35 @@ CPPFLAGS = -MMD -MP -D_GNU_SOURCE
 CFLAGS = ${CPPFLAGS} -std=${std} -O$O -Wall -Wextra -Wpedantic -Werror
 LDFLAGS = -O$O
 
-# SDL3
-CFLAGS += ${shell pkg-config --cflags sdl3}
-LDFLAGS += ${shell pkg-config --libs sdl3}
-
 DIRS = src
 BUILDDIRS = ${addprefix ${builddir}/,${DIRS}}
 
 SRC = ${wildcard src/*.c}
 OBJ = ${SRC:%.c=${builddir}/%.o}
 DEP = ${OBJ:.o=.d}
-EXEC = ${builddir}/sdl3
+EXEC = ${builddir}/sdl3${EXT}
 
-mode = release
+SDL_DIR = libs/sdl
+LIBS =
+TRASH = ${builddir}/compile_commands.json
+
+ifeq (${target},gnu)
+CC = gcc
+EXT =
+# SDL3
+CFLAGS += ${shell pkg-config --cflags sdl3}
+LDFLAGS += ${shell pkg-config --libs sdl3}
+else ifeq (${target},web)
+CC = emcc
+EXT = .html
+# SDL3
+CFLAGS += -I${SDL_DIR}/include
+LIBS += ${SDL_DIR}/build/libSDL3.a
+TRASH += ${builddir}/sdl3.wasm ${builddir}/sdl3.js
+else
+$(error "Unknown target: ${target}")
+endif
+
 ifeq (${mode},debug)
 CFLAGS += -ggdb3
 LDFLAGS += -ggdb3
@@ -37,7 +54,6 @@ else
 $(error "Unknown mode: ${mode}")
 endif
 
-lto = false
 ifeq (${lto},true)
 CFLAGS += -flto=auto -fuse-linker-plugin
 LDFLAGS += -flto=auto
@@ -45,7 +61,6 @@ else ifneq (${lto},false)
 ${error "lto should be true or false"}
 endif
 
-sanitize = false
 ifeq (${sanitize},true)
 CFLAGS += -fsanitize=address,leak,undefined
 LDFLAGS += -fsanitize=address,leak,undefined
@@ -72,17 +87,25 @@ run: ${EXEC}
 	$< ${args}
 
 clean:
-	${RM} ${EXEC} ${OBJ} ${DEP}
-	${foreach dir,${BUILDDIRS},if [[ -d  ${dir} ]]; then rmdir ${dir}; fi${newline}}
+	${RM} ${EXEC} ${OBJ} ${DEP} ${TRASH}
+	${foreach dir,${BUILDDIRS},if [[ -d ${dir} ]]; then rmdir ${dir}; fi${newline}}
+	if [[ -d ${builddir} ]]; then rmdir ${builddir}; fi
 
-.PHONY: all obj bear run clean
+clean_sdl:
+	${RM} -r ${SDL_DIR}/build
 
-${EXEC}: ${OBJ}
+.PHONY: all obj bear run clean clean_sdl
+
+${EXEC}: ${OBJ} ${LIBS}
 	${CC} -o $@ $^ ${LDFLAGS}
 
 ${builddir}/%.o: %.c
 	@mkdir -p ${dir $@}
 	${CC} ${CFLAGS} -o $@ -c $<
+
+${SDL_DIR}/build/libSDL3.a:
+	emcmake cmake -S ${SDL_DIR} -B ${SDL_DIR}/build
+	emmake make -C ${SDL_DIR}/build
 
 -include ${DEP}
 
