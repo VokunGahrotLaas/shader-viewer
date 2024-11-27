@@ -60,7 +60,7 @@ IndentRequiresClause: true
 InsertNewlineAtEOF: true
 IntegerLiteralSeparator:
   Binary: 0
-  Decimal: 3
+  Decimal: 0
   Hex: -1
 KeepEmptyLinesAtTheStartOfBlocks: false
 Language: Cpp

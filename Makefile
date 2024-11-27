@@ -29,15 +29,16 @@ ifeq (${target},gnu)
 CC = gcc
 EXT =
 # SDL3
-CFLAGS += ${shell pkg-config --cflags sdl3}
-LDFLAGS += ${shell pkg-config --libs sdl3}
+CFLAGS += ${shell pkg-config --cflags sdl3 gl glesv2}
+LDFLAGS += ${shell pkg-config --libs sdl3 gl glesv2}
 else ifeq (${target},web)
 CC = emcc
 EXT = .html
+TRASH += ${builddir}/sdl3.wasm ${builddir}/sdl3.js ${builddir}/sdl3.data
+LDFLAGS += --embed-file files -s FULL_ES2=1 -lGL
 # SDL3
 CFLAGS += -I${SDL_DIR}/include
 LIBS += ${SDL_DIR}/build/libSDL3.a
-TRASH += ${builddir}/sdl3.wasm ${builddir}/sdl3.js
 else
 $(error "Unknown target: ${target}")
 endif
@@ -84,7 +85,11 @@ bear: clean
 	ln -s ${builddir}/compile_commands.json compile_commands.json
 
 run: ${EXEC}
+ifeq (${target},web)
+	python -m http.server --dir ${builddir}
+else
 	$< ${args}
+endif
 
 clean:
 	${RM} ${EXEC} ${OBJ} ${DEP} ${TRASH}
