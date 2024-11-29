@@ -2,8 +2,8 @@
 #define SDL_MAIN_USE_CALLBACKS
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
-#include <SDL3/SDL_opengles2.h>
 #include <SDL3/SDL_opengl.h>
+#include <SDL3/SDL_opengles2.h>
 // libc
 #include <err.h>
 #include <stdio.h>
@@ -70,9 +70,15 @@ static bool compile_shader(char const* path, GLuint* shader, GLenum type)
 	if (fseek(file, 0, SEEK_END) == -1) return false;
 	long size = ftell(file);
 	if (size == -1) return false;
-	GLchar* buf = SDL_malloc(size * sizeof(GLchar));
 	if (fseek(file, 0, SEEK_SET) == -1) return false;
-	if (fread(buf, sizeof(GLchar), size, file) != (size_t)size) return false;
+	GLchar* buf = SDL_malloc((size + 1) * sizeof(GLchar));
+	if (fread(buf, sizeof(GLchar), size, file) != (size_t)size)
+	{
+		SDL_free(buf);
+		return false;
+	}
+	fclose(file);
+	buf[size] = '\0';
 	GLuint frag = glCreateShader(type);
 	GLchar const* cbuf = buf;
 	glShaderSource(frag, 1, &cbuf, NULL);
@@ -93,9 +99,9 @@ static bool compile_shader(char const* path, GLuint* shader, GLenum type)
 
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 {
-	if (argc < 1 || 2 < argc) return SDL_APP_FAILURE;
+	if (argc < 1 || 3 < argc) return SDL_APP_FAILURE;
 
-	//char const* vert_file = argc >= 3 ? argv[2] : "files/base.vert";
+	char const* vert_file = argc >= 3 ? argv[2] : "files/base.vert";
 	char const* frag_file = argc >= 2 ? argv[1] : "files/splatter.frag";
 
 	if (!SDL_SetAppMetadata("Example SDL3 Program", "1.0.0", "fr.vokunaav.sdl3")) return SDL_APP_FAILURE;
@@ -127,34 +133,54 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 
 	if (!(ctx->glcontext = SDL_GL_CreateContext(ctx->window))) return SDL_APP_FAILURE;
 
-	//GLuint vert;
-	//if (!compile_shader(vert_file, &vert, GL_VERTEX_SHADER)) return SDL_APP_FAILURE;
+	GLuint vert;
+	if (!compile_shader(vert_file, &vert, GL_VERTEX_SHADER)) return SDL_APP_FAILURE;
 
 	GLuint frag;
 	if (!compile_shader(frag_file, &frag, GL_FRAGMENT_SHADER)) return SDL_APP_FAILURE;
 
 	ctx->shader = glCreateProgram();
-	//glAttachShader(ctx->shader, vert);
+	glAttachShader(ctx->shader, vert);
 	glAttachShader(ctx->shader, frag);
 	glLinkProgram(ctx->shader);
-	//glDeleteShader(vert);
+	glDeleteShader(vert);
 	glDeleteShader(frag);
 	GLint success;
 	glGetProgramiv(ctx->shader, GL_LINK_STATUS, &success);
 	if (!success)
 	{
 		char errbuf[512];
-		glGetShaderInfoLog(frag, sizeof(errbuf), NULL, errbuf);
+		glGetProgramInfoLog(ctx->shader, sizeof(errbuf), NULL, errbuf);
 		fprintf(stderr, "shader program failed: %s\n", errbuf);
 		return SDL_APP_FAILURE;
 	}
 	glUseProgram(ctx->shader);
 
+	GLfloat const vertices[] = {
+		1.0, -1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, -1.0, 0.0,
+	};
+
+	GLushort const index[] = { 0, 1, 2, 3 };
+
+	GLuint v_buff;
+	glGenBuffers(1, &v_buff);
+	glBindBuffer(GL_ARRAY_BUFFER, v_buff);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+	GLuint i_buff;
+	glGenBuffers(1, &i_buff);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, i_buff);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(index), index, GL_STATIC_DRAW);
+
+	GLint position = glGetAttribLocation(ctx->shader, "position");
+	glVertexAttribPointer(position, 2, GL_FLOAT, false, 0, 0);
+	glEnableVertexAttribArray(position);
+
+	glViewport(0, 0, ctx->window_width, ctx->window_height);
 	GLint u_resolution = glGetUniformLocation(ctx->shader, "u_resolution");
 	glUniform2f(u_resolution, ctx->window_width, ctx->window_height);
 
 	glClearColor(0, 0, 0, 1);
-	glViewport(0, 0, ctx->window_width, ctx->window_height);
 
 	ctx->last_step = SDL_GetTicks();
 	return SDL_APP_CONTINUE;
@@ -166,7 +192,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 	glClear(GL_COLOR_BUFFER_BIT);
 	GLint u_time = glGetUniformLocation(ctx->shader, "u_time");
 	glUniform1f(u_time, SDL_GetTicks() / 1000.f);
-	glRectf(-1, -1, 1, 1);
+	glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, 0);
 	SDL_GL_SwapWindow(ctx->window);
 	return SDL_APP_CONTINUE;
 }

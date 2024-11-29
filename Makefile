@@ -1,7 +1,7 @@
 # options
 builddir = build
 mode = debug
-sanitize = false
+sanitize = true
 lto = false
 std = gnu23
 args =
@@ -22,30 +22,41 @@ DEP = ${OBJ:.o=.d}
 EXEC = ${builddir}/sdl3${EXT}
 
 SDL_DIR = libs/sdl
+SDL_BUILD_DIR =
 LIBS =
 TRASH = ${builddir}/compile_commands.json
 
 ifeq (${target},gnu)
 CC = gcc
 EXT =
-# SDL3
-CFLAGS += ${shell pkg-config --cflags sdl3 gl glesv2}
-LDFLAGS += ${shell pkg-config --libs sdl3 gl glesv2}
+ifeq (${mode},debug)
+SDL_BUILD_DIR = ${SDL_DIR}/build-debug
+else
+SDL_BUILD_DIR = ${SDL_DIR}/build-release
+endif
+LIBS += ${SDL_BUILD_DIR}/libSDL3.so
 else ifeq (${target},web)
 CC = emcc
 EXT = .html
 TRASH += ${builddir}/sdl3.wasm ${builddir}/sdl3.js ${builddir}/sdl3.data
-LDFLAGS += --embed-file files -s FULL_ES2=1 -lGL
-# SDL3
-CFLAGS += -I${SDL_DIR}/include
-LIBS += ${SDL_DIR}/build/libSDL3.a
+LDFLAGS += --embed-file files -s FULL_ES2=1
+ifeq (${mode},debug)
+SDL_BUILD_DIR = ${SDL_DIR}/build-web-debug
+else
+SDL_BUILD_DIR = ${SDL_DIR}/build-web-release
+endif
+LIBS += ${SDL_BUILD_DIR}/libSDL3.a
 else
 $(error "Unknown target: ${target}")
 endif
 
+# SDL3
+CFLAGS += -I${SDL_DIR}/include
+LDFLAGS += -L${SDL_BUILD_DIR} -lSDL3 -lGLESv2
+
 ifeq (${mode},debug)
-CFLAGS += -ggdb3
-LDFLAGS += -ggdb3
+CFLAGS += -g3
+LDFLAGS += -g3
 O = 0
 else ifeq (${mode},release)
 CFLAGS +=
@@ -82,7 +93,6 @@ obj: ${OBJ}
 bear: clean
 	mkdir -p ${builddir}
 	bear --output ${builddir}/compile_commands.json -- make obj
-	ln -s ${builddir}/compile_commands.json compile_commands.json
 
 run: ${EXEC}
 ifeq (${target},web)
@@ -97,20 +107,32 @@ clean:
 	if [[ -d ${builddir} ]]; then rmdir ${builddir}; fi
 
 clean_sdl:
-	${RM} -r ${SDL_DIR}/build
+	${RM} -r ${SDL_BUILD_DIR}
 
 .PHONY: all obj bear run clean clean_sdl
 
-${EXEC}: ${OBJ} ${LIBS}
+${EXEC}: ${OBJ} | ${LIBS}
 	${CC} -o $@ $^ ${LDFLAGS}
 
 ${builddir}/%.o: %.c
 	@mkdir -p ${dir $@}
 	${CC} ${CFLAGS} -o $@ -c $<
 
+${SDL_DIR}/build_debug/libSDL3.a:
+	cmake -S ${SDL_DIR} -B ${SDL_DIR}/build_debug -DCMAKE_BUILD_TYPE=Debug
+	make -C ${SDL_DIR}/build_debug
+
 ${SDL_DIR}/build/libSDL3.a:
-	emcmake cmake -S ${SDL_DIR} -B ${SDL_DIR}/build
-	emmake make -C ${SDL_DIR}/build
+	cmake -S ${SDL_DIR} -B ${SDL_DIR}/build
+	make -C ${SDL_DIR}/build
+
+${SDL_DIR}/buildweb_debug/libSDL3.a:
+	emcmake cmake -S ${SDL_DIR} -B ${SDL_DIR}/buildweb_debug -DCMAKE_BUILD_TYPE=Debug
+	emmake make -C ${SDL_DIR}/buildweb_debug
+
+${SDL_DIR}/buildweb/libSDL3.a:
+	emcmake cmake -S ${SDL_DIR} -B ${SDL_DIR}/buildweb
+	emmake make -C ${SDL_DIR}/buildweb
 
 -include ${DEP}
 
