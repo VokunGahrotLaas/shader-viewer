@@ -1,5 +1,5 @@
 # options
-builddir = build
+builddir =
 mode = debug
 sanitize = true
 lto = false
@@ -22,7 +22,7 @@ DEP = ${OBJ:.o=.d}
 EXEC = ${builddir}/sdl3${EXT}
 
 SDL_DIR = libs/sdl
-SDL_BUILD_DIR =
+SDL_BUILD_DIR = ${builddir}/libs/sdl
 LIBS =
 TRASH = ${builddir}/compile_commands.json
 
@@ -30,9 +30,9 @@ ifeq (${target},gnu)
 CC = gcc
 EXT =
 ifeq (${mode},debug)
-SDL_BUILD_DIR = ${SDL_DIR}/build-debug
+builddir = build-debug
 else
-SDL_BUILD_DIR = ${SDL_DIR}/build-release
+builddir = build-release
 endif
 LIBS += ${SDL_BUILD_DIR}/libSDL3.so
 else ifeq (${target},web)
@@ -41,9 +41,9 @@ EXT = .html
 TRASH += ${builddir}/sdl3.wasm ${builddir}/sdl3.js ${builddir}/sdl3.data
 LDFLAGS += --embed-file files -s FULL_ES2=1
 ifeq (${mode},debug)
-SDL_BUILD_DIR = ${SDL_DIR}/build-web-debug
+builddir = build-web-debug
 else
-SDL_BUILD_DIR = ${SDL_DIR}/build-web-release
+builddir = build-web-release
 endif
 LIBS += ${SDL_BUILD_DIR}/libSDL3.a
 else
@@ -118,21 +118,13 @@ ${builddir}/%.o: %.c
 	@mkdir -p ${dir $@}
 	${CC} ${CFLAGS} -o $@ -c $<
 
-${SDL_DIR}/build_debug/libSDL3.a:
-	cmake -S ${SDL_DIR} -B ${SDL_DIR}/build_debug -DCMAKE_BUILD_TYPE=Debug
-	make -C ${SDL_DIR}/build_debug
+${SDL_BUILD_DIR}/libSDL3.so:
+	cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR} -DCMAKE_BUILD_TYPE=Debug
+	make -C ${SDL_BUILD_DIR}
 
-${SDL_DIR}/build/libSDL3.a:
-	cmake -S ${SDL_DIR} -B ${SDL_DIR}/build
-	make -C ${SDL_DIR}/build
-
-${SDL_DIR}/buildweb_debug/libSDL3.a:
-	emcmake cmake -S ${SDL_DIR} -B ${SDL_DIR}/buildweb_debug -DCMAKE_BUILD_TYPE=Debug
-	emmake make -C ${SDL_DIR}/buildweb_debug
-
-${SDL_DIR}/buildweb/libSDL3.a:
-	emcmake cmake -S ${SDL_DIR} -B ${SDL_DIR}/buildweb
-	emmake make -C ${SDL_DIR}/buildweb
+${SDL_BUILD_DIR}/libSDL3.a:
+	emcmake cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR}
+	emmake make -C ${SDL_BUILD_DIR}
 
 -include ${DEP}
 
