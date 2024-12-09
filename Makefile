@@ -7,6 +7,7 @@ std = gnu23
 args =
 target = gnu
 O = 0
+prefix =
 
 CC = gcc
 CPPFLAGS = -MMD -MP -D_GNU_SOURCE
@@ -74,8 +75,16 @@ ${error "lto should be true or false"}
 endif
 
 ifeq (${sanitize},true)
-CFLAGS += -fsanitize=address,leak,undefined
+CFLAGS += -fsanitize=address,leak,undefined -fno-omit-frame-pointer \
+		  -fsanitize-address-use-after-scope
 LDFLAGS += -fsanitize=address,leak,undefined
+LIBS += ${builddir}/libs/dlopen/libdlopen.so
+TRASH += ${builddir}/libs/dlopen/libdlopen.so
+DIRS += ${builddir}/libs/dlopen
+prefix := LD_PRELOAD="/usr/lib/libasan.so:${builddir}/libs/dlopen/libdlopen.so" \
+	ASAN_OPTIONS=strict_string_checks=1:detect_stack_use_after_return=1:\
+	check_initialization_order=1:strict_init_order=1 \
+	LSAN_OPTIONS=suppressions=lsan.ignore ${prefix}
 else ifneq (${sanitize},false)
 ${error "sanitize should be true or false"}
 endif
@@ -98,13 +107,13 @@ run: ${EXEC}
 ifeq (${target},web)
 	python -m http.server --dir ${builddir}
 else
-	$< ${args}
+	${prefix} $< ${args}
 endif
 
 clean:
 	${RM} ${EXEC} ${OBJ} ${DEP} ${TRASH}
 	${foreach dir,${BUILDDIRS},if [[ -d ${dir} ]]; then rmdir ${dir}; fi${newline}}
-	if [[ -d ${builddir} ]]; then rmdir ${builddir}; fi
+	-if [[ -d ${builddir} ]]; then rmdir ${builddir}; fi
 
 clean_sdl:
 	${RM} -r ${SDL_BUILD_DIR}
@@ -119,12 +128,16 @@ ${builddir}/%.o: %.c
 	${CC} ${CFLAGS} -o $@ -c $<
 
 ${SDL_BUILD_DIR}/libSDL3.so:
-	cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR} -DCMAKE_BUILD_TYPE=Debug
-	make -C ${SDL_BUILD_DIR}
+	cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR} -DCMAKE_BUILD_TYPE=Debug -DSDL_LIBC=ON
+	cmake --build ${SDL_BUILD_DIR} --config Debug
 
 ${SDL_BUILD_DIR}/libSDL3.a:
 	emcmake cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR}
-	emmake make -C ${SDL_BUILD_DIR}
+	emcmake cmake --build ${SDL_BUILD_DIR}
+
+${builddir}/libs/dlopen/libdlopen.so: libs/dlopen/dlopen.c
+	@mkdir -p ${dir $@}
+	${CC} -fpic --shared -o $@ $< -ldl
 
 -include ${DEP}
 
