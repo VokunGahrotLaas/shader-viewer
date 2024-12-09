@@ -37,6 +37,7 @@ builddir = build-release
 endif
 LIBS += ${SDL_BUILD_DIR}/libSDL3.so
 else ifeq (${target},web)
+sanitize = false
 CC = emcc
 EXT = .html
 TRASH += ${builddir}/sdl3.wasm ${builddir}/sdl3.js ${builddir}/sdl3.data
@@ -58,10 +59,12 @@ LDFLAGS += -L${SDL_BUILD_DIR} -lSDL3 -lGLESv2
 ifeq (${mode},debug)
 CFLAGS += -g3
 LDFLAGS += -g3
+SDL_CMAKE_FLAGS = -DCMAKE_BUILD_TYPE=Debug -DSDL_LIBC=ON
 O = 0
 else ifeq (${mode},release)
 CFLAGS +=
 LDFLAGS +=
+SDL_CMAKE_FLAGS = -DCMAKE_BUILD_TYPE=Release
 O = 2
 else
 $(error "Unknown mode: ${mode}")
@@ -115,8 +118,9 @@ clean:
 	${foreach dir,${BUILDDIRS},if [[ -d ${dir} ]]; then rmdir ${dir}; fi${newline}}
 	-if [[ -d ${builddir} ]]; then rmdir ${builddir}; fi
 
-clean_sdl:
+clean_sdl: clean
 	${RM} -r ${SDL_BUILD_DIR}
+	-if [[ -d ${builddir}/libs ]]; then rmdir ${builddir}/libs; fi
 
 .PHONY: all obj bear run clean clean_sdl
 
@@ -128,12 +132,12 @@ ${builddir}/%.o: %.c
 	${CC} ${CFLAGS} -o $@ -c $<
 
 ${SDL_BUILD_DIR}/libSDL3.so:
-	cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR} -DCMAKE_BUILD_TYPE=Debug -DSDL_LIBC=ON
-	cmake --build ${SDL_BUILD_DIR} --config Debug
+	cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR} ${SDL_CMAKE_FLAGS}
+	+make -C ${SDL_BUILD_DIR}
 
 ${SDL_BUILD_DIR}/libSDL3.a:
-	emcmake cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR}
-	emcmake cmake --build ${SDL_BUILD_DIR}
+	emcmake cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR} ${SDL_CMAKE_FLAGS}
+	+emmake make -C ${SDL_BUILD_DIR}
 
 ${builddir}/libs/dlopen/libdlopen.so: libs/dlopen/dlopen.c
 	@mkdir -p ${dir $@}
