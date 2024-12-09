@@ -118,7 +118,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 	}
 
 	char const* vert_file = argc >= 3 ? argv[2] : "files/base.vert";
-	char const* frag_file = argc >= 2 ? argv[1] : "files/color.frag";
+	char const* frag_file = argc >= 2 ? argv[1] : "files/mandelbrot.frag";
 
 	if (!SDL_SetAppMetadata("Example SDL3 Program", "1.0.0", "fr.vokunaav.sdl3"))
 	{
