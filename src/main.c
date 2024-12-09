@@ -2,20 +2,30 @@
 #define SDL_MAIN_USE_CALLBACKS
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
-#include <SDL3/SDL_opengl.h>
 #include <SDL3/SDL_opengles2.h>
 // libc
-#include <err.h>
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define SDL_WINDOW_WIDTH 1280
 #define SDL_WINDOW_HEIGHT 720
+
+#define SDL_LogError_(...) SDL_LogError(SDL_LOG_CATEGORY_ERROR, __VA_ARGS__)
+#define SDL_LogError_GetError(F) SDL_LogError_(#F " failed: %s\n", SDL_GetError())
+#define SDL_LogError_strerror(F) SDL_LogError_(#F " failed: %s\n", strerror(errno))
+#define SDL_LogError_glGetError(F) SDL_LogError_(#F " failed: %x\n", glGetError())
 
 struct appstate
 {
 	SDL_Window* window;
 	SDL_GLContext glcontext;
 	GLuint shader;
+	GLuint vbo;
+	GLint a_position;
+	GLint u_resolution;
+	GLint u_time;
 	int32_t window_width;
 	int32_t window_height;
 	uint64_t last_step;
@@ -34,17 +44,16 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result);
 
 struct appstate* appstate_init(void)
 {
-	struct appstate* appstate = SDL_malloc(sizeof(*appstate));
-	SDL_zerop(appstate);
+	struct appstate* appstate = SDL_calloc(1, sizeof(*appstate));
 	return appstate;
 }
 
 void appstate_free(struct appstate* ctx)
 {
 	if (!ctx) return;
-	SDL_DestroyWindow(ctx->window);
-	SDL_GL_DestroyContext(ctx->glcontext);
 	glDeleteProgram(ctx->shader);
+	SDL_GL_DestroyContext(ctx->glcontext);
+	SDL_DestroyWindow(ctx->window);
 	SDL_free(ctx);
 }
 
@@ -64,7 +73,7 @@ static bool compile_shader(char const* path, GLuint* shader, GLenum type)
 	FILE* file = fopen(path, "rb");
 	if (!file)
 	{
-		warn("fopen failed");
+		SDL_LogError_strerror(fopen);
 		return false;
 	}
 	if (fseek(file, 0, SEEK_END) == -1) return false;
@@ -88,9 +97,12 @@ static bool compile_shader(char const* path, GLuint* shader, GLenum type)
 	glGetShaderiv(frag, GL_COMPILE_STATUS, &success);
 	if (!success)
 	{
-		char errbuf[512];
-		glGetShaderInfoLog(frag, sizeof(errbuf), NULL, errbuf);
-		fprintf(stderr, "shader compilation failed: %s\n", errbuf);
+		GLsizei errsize = 0;
+		glGetShaderiv(frag, GL_INFO_LOG_LENGTH, &errsize);
+		char* errbuf = calloc(errsize + 1, sizeof(char));
+		glGetShaderInfoLog(frag, errsize, NULL, errbuf);
+		SDL_LogError_("shader program compilation failed: %s", errbuf);
+		free(errbuf);
 		return false;
 	}
 	*shader = frag;
@@ -99,12 +111,26 @@ static bool compile_shader(char const* path, GLuint* shader, GLenum type)
 
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 {
-	if (argc < 1 || 3 < argc) return SDL_APP_FAILURE;
+	if (argc < 1 || 3 < argc)
+	{
+		SDL_LogError_("incorrect number of arguments %i\n", argc);
+		return SDL_APP_FAILURE;
+	}
 
 	char const* vert_file = argc >= 3 ? argv[2] : "files/base.vert";
-	char const* frag_file = argc >= 2 ? argv[1] : "files/splatter.frag";
+	char const* frag_file = argc >= 2 ? argv[1] : "files/color.frag";
 
-	if (!SDL_SetAppMetadata("Example SDL3 Program", "1.0.0", "fr.vokunaav.sdl3")) return SDL_APP_FAILURE;
+	if (!SDL_SetAppMetadata("Example SDL3 Program", "1.0.0", "fr.vokunaav.sdl3"))
+	{
+		SDL_LogError_GetError(SDL_SetAppMetadata);
+		return SDL_APP_FAILURE;
+	}
+
+	if (!SDL_Init(SDL_INIT_VIDEO))
+	{
+		SDL_LogError_GetError(SDL_Init);
+		return SDL_APP_FAILURE;
+	}
 
 	const struct
 	{
@@ -116,10 +142,14 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 		{ SDL_PROP_APP_METADATA_TYPE_STRING,		 "game"							},
 	};
 
-	if (!SDL_Init(SDL_INIT_VIDEO)) return SDL_APP_FAILURE;
-
 	for (size_t i = 0; i < SDL_arraysize(extended_metadata); ++i)
-		if (!SDL_SetAppMetadataProperty(extended_metadata[i].key, extended_metadata[i].value)) return SDL_APP_FAILURE;
+	{
+		if (!SDL_SetAppMetadataProperty(extended_metadata[i].key, extended_metadata[i].value))
+		{
+			SDL_LogError_GetError(SDL_SetAppMetadataProperty);
+			return SDL_APP_FAILURE;
+		}
+	}
 
 	if (!(*appstate = appstate_init())) return SDL_APP_FAILURE;
 	struct appstate* ctx = *appstate;
@@ -127,11 +157,26 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 	ctx->window_width = SDL_WINDOW_WIDTH;
 	ctx->window_height = SDL_WINDOW_HEIGHT;
 
-	if (!(ctx->window = SDL_CreateWindow("Example SDL3 Program", ctx->window_width, ctx->window_height,
-										 SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL)))
-		return SDL_APP_FAILURE;
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-	if (!(ctx->glcontext = SDL_GL_CreateContext(ctx->window))) return SDL_APP_FAILURE;
+	if (!(ctx->window = SDL_CreateWindow("Example SDL3 Program", ctx->window_width, ctx->window_height,
+										 SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN)))
+	{
+		SDL_LogError_GetError(SDL_CreateWindow);
+		return SDL_APP_FAILURE;
+	}
+
+	if (!(ctx->glcontext = SDL_GL_CreateContext(ctx->window)))
+	{
+		SDL_LogError_GetError(SDL_GL_GetCurrentContext);
+		return SDL_APP_FAILURE;
+	}
 
 	GLuint vert;
 	if (!compile_shader(vert_file, &vert, GL_VERTEX_SHADER)) return SDL_APP_FAILURE;
@@ -143,57 +188,73 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 	glAttachShader(ctx->shader, vert);
 	glAttachShader(ctx->shader, frag);
 	glLinkProgram(ctx->shader);
+	glDetachShader(ctx->shader, vert);
+	glDetachShader(ctx->shader, frag);
 	glDeleteShader(vert);
 	glDeleteShader(frag);
 	GLint success;
 	glGetProgramiv(ctx->shader, GL_LINK_STATUS, &success);
 	if (!success)
 	{
-		char errbuf[512];
-		glGetProgramInfoLog(ctx->shader, sizeof(errbuf), NULL, errbuf);
-		fprintf(stderr, "shader program failed: %s\n", errbuf);
+		GLsizei errsize = 0;
+		glGetProgramiv(ctx->shader, GL_INFO_LOG_LENGTH, &errsize);
+		char* errbuf = calloc(errsize + 1, sizeof(char));
+		glGetProgramInfoLog(ctx->shader, errsize, NULL, errbuf);
+		SDL_LogError_("shader program linking failed: %s", errbuf);
+		free(errbuf);
 		return SDL_APP_FAILURE;
 	}
 	glUseProgram(ctx->shader);
 
-	GLfloat const vertices[] = {
-		1.0, -1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, -1.0, 0.0,
-	};
+	static GLfloat points[] = { 1, -1, -1, -1, -1, 1, 1, 1 };
+	glGenBuffers(1, &ctx->vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(points), points, GL_STATIC_DRAW);
+	ctx->a_position = glGetAttribLocation(ctx->shader, "a_position");
+	if (ctx->a_position == -1)
+	{
+		SDL_LogError_glGetError(glGetAttribLocation);
+		return SDL_APP_FAILURE;
+	}
+	glVertexAttribPointer(ctx->a_position, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+	glEnableVertexAttribArray(ctx->a_position);
 
-	GLushort const index[] = { 0, 1, 2, 3 };
+	ctx->u_resolution = glGetUniformLocation(ctx->shader, "u_resolution");
+	if (ctx->u_resolution != -1)
+		glUniform2f(ctx->u_resolution, ctx->window_width, ctx->window_height);
 
-	GLuint v_buff;
-	glGenBuffers(1, &v_buff);
-	glBindBuffer(GL_ARRAY_BUFFER, v_buff);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-
-	GLuint i_buff;
-	glGenBuffers(1, &i_buff);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, i_buff);
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(index), index, GL_STATIC_DRAW);
-
-	GLint position = glGetAttribLocation(ctx->shader, "position");
-	glVertexAttribPointer(position, 2, GL_FLOAT, false, 0, 0);
-	glEnableVertexAttribArray(position);
+	ctx->u_time = glGetUniformLocation(ctx->shader, "u_time");
 
 	glViewport(0, 0, ctx->window_width, ctx->window_height);
-	GLint u_resolution = glGetUniformLocation(ctx->shader, "u_resolution");
-	glUniform2f(u_resolution, ctx->window_width, ctx->window_height);
-
-	glClearColor(0, 0, 0, 1);
+	glEnable(GL_CULL_FACE); // cull face
+	glCullFace(GL_BACK); // cull back face
+	glFrontFace(GL_CW); // GL_CCW for counter clock-wise
 
 	ctx->last_step = SDL_GetTicks();
+
+	SDL_ShowWindow(ctx->window);
 	return SDL_APP_CONTINUE;
 }
 
 SDL_AppResult SDL_AppIterate(void* appstate)
 {
 	struct appstate* ctx = appstate;
+
+	glClearColor(1, 0, 0, 1); // red
 	glClear(GL_COLOR_BUFFER_BIT);
-	GLint u_time = glGetUniformLocation(ctx->shader, "u_time");
-	glUniform1f(u_time, SDL_GetTicks() / 1000.f);
-	glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, 0);
+
+	glUseProgram(ctx->shader);
+	glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
+	glEnableVertexAttribArray(ctx->a_position);
+
+	if (ctx->u_time != -1)
+		glUniform1f(ctx->u_time, SDL_GetTicks() / 1000.f);
+
+	glClearColor(0, 0, 1, 1); // blue
+	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
 	SDL_GL_SwapWindow(ctx->window);
+
 	return SDL_APP_CONTINUE;
 }
 
@@ -207,9 +268,9 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 	case SDL_EVENT_WINDOW_RESIZED:
 		ctx->window_width = event->window.data1;
 		ctx->window_height = event->window.data2;
+		if (ctx->u_resolution != -1)
+			glUniform2f(ctx->u_resolution, ctx->window_width, ctx->window_height);
 		glViewport(0, 0, ctx->window_width, ctx->window_height);
-		GLint u_resolution = glGetUniformLocation(ctx->shader, "u_resolution");
-		glUniform2f(u_resolution, ctx->window_width, ctx->window_height);
 		break;
 	default: break;
 	}
