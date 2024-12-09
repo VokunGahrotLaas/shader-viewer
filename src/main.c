@@ -17,6 +17,14 @@
 #define SDL_LogError_strerror(F) SDL_LogError_(#F " failed: %s\n", strerror(errno))
 #define SDL_LogError_glGetError(F) SDL_LogError_(#F " failed: %x\n", glGetError())
 
+struct coord
+{
+	double x;
+	double y;
+	double z;
+	double w;
+};
+
 struct appstate
 {
 	SDL_Window* window;
@@ -26,6 +34,9 @@ struct appstate
 	GLint a_position;
 	GLint u_resolution;
 	GLint u_time;
+	GLint u_mouse;
+	GLint u_coord;
+	struct coord coord;
 	int32_t window_width;
 	int32_t window_height;
 	uint64_t last_step;
@@ -45,6 +56,11 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result);
 struct appstate* appstate_init(void)
 {
 	struct appstate* appstate = SDL_calloc(1, sizeof(*appstate));
+	if (!appstate) return NULL;
+	appstate->coord.x = 0;
+	appstate->coord.y = 0;
+	appstate->coord.z = 1;
+	appstate->coord.w = 80;
 	return appstate;
 }
 
@@ -62,8 +78,34 @@ static int handle_key_event([[maybe_unused]] struct appstate* ctx, SDL_Scancode 
 	switch (key_code)
 	{
 	case SDL_SCANCODE_ESCAPE: [[fallthrough]];
-	case SDL_SCANCODE_Q: return SDL_APP_SUCCESS;
+	case SDL_SCANCODE_K: return SDL_APP_SUCCESS;
+	// coord x
+	case SDL_SCANCODE_LEFT: [[fallthrough]];
+	case SDL_SCANCODE_A: ctx->coord.x -= .1 / ctx->coord.z; goto update_coord;
+	case SDL_SCANCODE_RIGHT: [[fallthrough]];
+	case SDL_SCANCODE_D: ctx->coord.x += .1 / ctx->coord.z; goto update_coord;
+	// coord y
+	case SDL_SCANCODE_DOWN: [[fallthrough]];
+	case SDL_SCANCODE_S: ctx->coord.y -= .1 / ctx->coord.z; goto update_coord;
+	case SDL_SCANCODE_UP: [[fallthrough]];
+	case SDL_SCANCODE_W: ctx->coord.y += .1 / ctx->coord.z; goto update_coord;
+	// coord zoom
+	case SDL_SCANCODE_PAGEDOWN: [[fallthrough]];
+	case SDL_SCANCODE_E: ctx->coord.z -= ctx->coord.z / 100.; if (ctx->coord.z <= 0.) ctx->coord.z = 1e-100; goto update_coord;
+	case SDL_SCANCODE_PAGEUP: [[fallthrough]];
+	case SDL_SCANCODE_Q: ctx->coord.z += ctx->coord.z / 100.; goto update_coord;
+	// coord max_iteration
+	case SDL_SCANCODE_F: ctx->coord.w -= 1; goto update_coord;
+	case SDL_SCANCODE_R: ctx->coord.w += 1; goto update_coord;
 	default: break;
+	}
+	return SDL_APP_CONTINUE;
+update_coord:
+	if (ctx->u_coord != -1)
+	{
+		glUseProgram(ctx->shader);
+		glUniform4f(ctx->u_coord, ctx->coord.x, ctx->coord.y, ctx->coord.z, ctx->coord.w);
+		glUseProgram(0);
 	}
 	return SDL_APP_CONTINUE;
 }
@@ -220,11 +262,19 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 	glEnableVertexAttribArray(ctx->a_position);
 
 	ctx->u_resolution = glGetUniformLocation(ctx->shader, "u_resolution");
-	if (ctx->u_resolution != -1)
-		glUniform2f(ctx->u_resolution, ctx->window_width, ctx->window_height);
+	if (ctx->u_resolution != -1) glUniform2f(ctx->u_resolution, ctx->window_width, ctx->window_height);
 
 	ctx->u_time = glGetUniformLocation(ctx->shader, "u_time");
+	if (ctx->u_time != -1) glUniform1f(ctx->u_time, SDL_GetTicks() / 1000.f);
 
+	ctx->u_mouse = glGetUniformLocation(ctx->shader, "u_mouse");
+	if (ctx->u_mouse != -1) glUniform2f(ctx->u_mouse, 0, 0);
+
+	ctx->u_coord = glGetUniformLocation(ctx->shader, "u_coord");
+	if (ctx->u_coord != -1) glUniform4f(ctx->u_coord, ctx->coord.x, ctx->coord.y, ctx->coord.z, ctx->coord.w);
+
+	glUseProgram(0);
+	glClearColor(0, 0, 0, 1);
 	glViewport(0, 0, ctx->window_width, ctx->window_height);
 	glEnable(GL_CULL_FACE); // cull face
 	glCullFace(GL_BACK); // cull back face
@@ -240,18 +290,16 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 {
 	struct appstate* ctx = appstate;
 
-	glClearColor(1, 0, 0, 1); // red
 	glClear(GL_COLOR_BUFFER_BIT);
 
 	glUseProgram(ctx->shader);
 	glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
 	glEnableVertexAttribArray(ctx->a_position);
 
-	if (ctx->u_time != -1)
-		glUniform1f(ctx->u_time, SDL_GetTicks() / 1000.f);
+	if (ctx->u_time != -1) glUniform1f(ctx->u_time, SDL_GetTicks() / 1000.f);
 
-	glClearColor(0, 0, 1, 1); // blue
 	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	glUseProgram(0);
 
 	SDL_GL_SwapWindow(ctx->window);
 
@@ -268,9 +316,18 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 	case SDL_EVENT_WINDOW_RESIZED:
 		ctx->window_width = event->window.data1;
 		ctx->window_height = event->window.data2;
-		if (ctx->u_resolution != -1)
-			glUniform2f(ctx->u_resolution, ctx->window_width, ctx->window_height);
+		if (ctx->u_resolution != -1) glUniform2f(ctx->u_resolution, ctx->window_width, ctx->window_height);
+		glUseProgram(ctx->shader);
+		glUseProgram(0);
 		glViewport(0, 0, ctx->window_width, ctx->window_height);
+		break;
+	case SDL_EVENT_MOUSE_MOTION:
+		if (event->motion.state & SDL_BUTTON_LEFT && ctx->u_mouse != -1)
+		{
+			glUseProgram(ctx->shader);
+			glUniform2f(ctx->u_mouse, event->motion.x, event->motion.y);
+			glUseProgram(0);
+		}
 		break;
 	default: break;
 	}

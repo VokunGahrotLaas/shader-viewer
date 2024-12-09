@@ -15,20 +15,23 @@ vec3 palette(in float t)
 
 uniform float u_time;
 uniform vec2 u_resolution;
-uniform vec4 u_coord;
+uniform vec2 u_mouse;
 
 void main(void)
 {
-	vec2 coord = u_coord.xy;
-	float zoom = u_coord.z;
-	float max_iteration = u_coord.w;
+	vec2 m = vec2(sin(u_time / 4.), -cos(u_time / 5.73));
+	float v = cos(u_time * 3.) * 16.;
+
+	vec2 coord = vec2(-1.4 + m.x / 9., 0.04 * m.y);
+	float zoom = 10. + m.y * 5.;
 
 	vec2 uv = (gl_FragCoord.xy * 2. - u_resolution.xy) / u_resolution.y;
 	uv = uv / zoom + coord;
 
 	float it = 0.;
 	vec2 xy = vec2(0., 0.);
-	for (float iteration = 0.; iteration < 1000.; iteration += 1.)
+	float max_iteration = 80. + v;
+	for (float iteration = 0.; iteration < 80. + 16.; iteration += 1.)
 	{
 		if (dot(xy, xy) > 4. || iteration > max_iteration) break;
 		xy = vec2(xy.x * xy.x - xy.y * xy.y, 2. * xy.x * xy.y) + uv;
