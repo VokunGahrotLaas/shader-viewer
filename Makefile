@@ -20,7 +20,7 @@ BUILDDIRS = ${addprefix ${builddir}/,${DIRS}}
 SRC = ${wildcard src/*.c}
 OBJ = ${SRC:%.c=${builddir}/%.o}
 DEP = ${OBJ:.o=.d}
-EXEC = ${builddir}/sdl3${EXT}
+EXEC = ${builddir}/shader-viewer${EXT}
 
 SDL_DIR = libs/sdl
 SDL_BUILD_DIR = ${builddir}/libs/sdl
