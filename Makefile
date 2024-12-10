@@ -41,7 +41,7 @@ sanitize = false
 CC = emcc
 EXT = .html
 TRASH += ${builddir}/sdl3.wasm ${builddir}/sdl3.js ${builddir}/sdl3.data
-LDFLAGS += --embed-file files -s FULL_ES2=1
+LDFLAGS += --embed-file files -s FULL_ES2=1 --shell-file shell.html
 ifeq (${mode},debug)
 builddir = build-web-debug
 else

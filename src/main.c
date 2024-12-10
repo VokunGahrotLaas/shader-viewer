@@ -95,8 +95,8 @@ static int handle_key_event([[maybe_unused]] struct appstate* ctx, SDL_Scancode 
 	case SDL_SCANCODE_PAGEUP: [[fallthrough]];
 	case SDL_SCANCODE_Q: ctx->coord.z += ctx->coord.z / 100.; goto update_coord;
 	// coord max_iteration
-	case SDL_SCANCODE_F: ctx->coord.w -= 1; goto update_coord;
-	case SDL_SCANCODE_R: ctx->coord.w += 1; goto update_coord;
+	case SDL_SCANCODE_F: ctx->coord.w -= ctx->coord.w / 100.; goto update_coord;
+	case SDL_SCANCODE_R: ctx->coord.w += ctx->coord.w / 100.; goto update_coord;
 	default: break;
 	}
 	return SDL_APP_CONTINUE;
