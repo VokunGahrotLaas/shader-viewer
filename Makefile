@@ -44,6 +44,7 @@ TRASH += ${builddir}/sdl3.wasm ${builddir}/sdl3.js ${builddir}/sdl3.data
 LDFLAGS += --embed-file files -s FULL_ES2=1 --shell-file shell.html
 ifeq (${mode},debug)
 builddir = build-web-debug
+LDFLAGS += --emrun
 else
 builddir = build-web-release
 endif
@@ -108,7 +109,7 @@ bear: clean
 
 run: ${EXEC}
 ifeq (${target},web)
-	python -m http.server --dir ${builddir}
+	emrun -- $< ${args}
 else
 	${prefix} $< ${args}
 endif
