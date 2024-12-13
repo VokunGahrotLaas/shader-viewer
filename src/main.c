@@ -19,6 +19,8 @@
 #define SDL_LogError_strerror(F) SDL_LogError_(#F " failed: %s\n", strerror(errno))
 #define SDL_LogError_glGetError(F) SDL_LogError_(#F " failed: %x\n", glGetError())
 
+#define SDL_LogInfo_(...) SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, __VA_ARGS__)
+
 struct vec2
 {
 	double x;
@@ -84,6 +86,8 @@ struct appstate
 {
 	struct window* window;
 	TTF_Font* font;
+	char const* vert_path;
+	char const* frag_path;
 };
 
 struct appstate* appstate_init(void);
@@ -151,7 +155,7 @@ void window_draw(struct window* window)
 		double fps = 1 / (frames_sum / window->frames_size);
 		char fps_buffer[256];
 		snprintf(fps_buffer, sizeof(fps_buffer), "%.2f", fps);
-		SDL_Color fps_color = { 0xee, 0xee, 0xee, 0xcc };
+		SDL_Color fps_color = { 0xee, 0xee, 0xee, 0xff };
 		SDL_Surface* fps_surface = TTF_RenderText_Solid(window->app->font, fps_buffer, 0, fps_color);
 		SDL_Texture* fps_texture = SDL_CreateTextureFromSurface(window->renderer, fps_surface);
 		SDL_FRect fps_rect = { 10, 10, fps_surface->w + 10, fps_surface->w + 10 };
@@ -189,7 +193,6 @@ void gles2_draw_program(struct window* window)
 void window_update_resolution(struct window* window, int width, int height)
 {
 	if (window->resolution.x == width && window->resolution.y == height) return;
-	//printf("resize {%i, %i}\n", width, height);
 	window->resolution.x = width;
 	window->resolution.y = height;
 	SDL_Rect rect = { 0, 0, window->resolution.x, window->resolution.y };
@@ -381,7 +384,6 @@ GLuint gles2_compile_program(char const* vert_path, char const* frag_path)
 	}
 	glAttachShader(prog, vert);
 	glAttachShader(prog, frag);
-	glBindAttribLocation(prog, 0, "a_position");
 	glLinkProgram(prog);
 	glDetachShader(prog, vert);
 	glDetachShader(prog, frag);
@@ -504,9 +506,6 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 		return SDL_APP_FAILURE;
 	}
 
-	char const* vert_file = argc >= 3 ? argv[2] : "files/base.vert";
-	char const* frag_file = argc >= 2 ? argv[1] : "files/mandelbrot.frag";
-
 	if (!SDL_SetAppMetadata("Example SDL3 Program", "1.0.0", "fr.vokunaav.sdl3"))
 	{
 		SDL_LogError_GetError(SDL_SetAppMetadata);
@@ -547,7 +546,10 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 	struct appstate* ctx = *appstate = appstate_init();
 	if (!ctx) return SDL_APP_FAILURE;
 
-	ctx->window = window_init(ctx, CONTEXT_GLES2, vert_file, frag_file);
+	ctx->vert_path = argc >= 3 ? argv[2] : "files/base.vert";
+	ctx->frag_path = argc >= 2 ? argv[1] : "files/mandelbrot.frag";
+
+	ctx->window = window_init(ctx, CONTEXT_GLES2, ctx->vert_path, ctx->frag_path);
 	if (!ctx->window) return SDL_APP_FAILURE;
 
 	SDL_ShowWindow(ctx->window->window);
@@ -579,12 +581,10 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 		if (event->key.windowID != SDL_GetWindowID(ctx->window->window)) break;
 		return handle_key_event(ctx->window, event->key.scancode);
 	case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-		//printf("pixel size changed %i %i\n", event->window.data1, event->window.data2);
 		if (event->window.windowID != SDL_GetWindowID(ctx->window->window)) break;
 		window_update_resolution(ctx->window, event->window.data1, event->window.data2);
 		break;
 	case SDL_EVENT_WINDOW_RESIZED:
-		//printf("resized %i %i\n", event->window.data1, event->window.data2);
 		if (event->window.windowID != SDL_GetWindowID(ctx->window->window)) break;
 		window_update_resolution(ctx->window, event->window.data1, event->window.data2);
 		break;
@@ -598,15 +598,28 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 		break;
 	case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
 		if (event->window.windowID != SDL_GetWindowID(ctx->window->window)) break;
-		//printf("fullscreen enter %i %i\n", event->window.data1, event->window.data2);
 		ctx->window->fullscreen = true;
 		break;
 	case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
 		if (event->window.windowID != SDL_GetWindowID(ctx->window->window)) break;
-		//printf("fullscreen leave %i %i\n", event->window.data1, event->window.data2);
 		ctx->window->fullscreen = false;
 		break;
-	default: /*printf("unknown event %i %i %i\n", event->window.type, event->window.data1, event->window.data2);*/ break;
+	case SDL_EVENT_DROP_FILE:
+		if (event->drop.windowID != SDL_GetWindowID(ctx->window->window)) break;
+		SDL_LogInfo_("file dropped: %s\n", event->drop.data);
+		struct gles2_context* gl = ctx->window->ctx.value.gles2;
+		SDL_FlushRenderer(ctx->window->renderer);
+		SDL_GL_MakeCurrent(gl->window, gl->gl);
+		// needed for webgl
+		glDisableVertexAttribArray(1);
+		if (gl->prog) glDeleteProgram(gl->prog);
+		if (gl->vbo != GL_INVALID_VALUE) glDeleteBuffers(1, &gl->vbo);
+		gl->prog = gles2_compile_program(ctx->vert_path, event->drop.data);
+		gles2_init_program(gl);
+		// needed for webgl
+		glEnableVertexAttribArray(1);
+		break;
+	default: break;
 	}
 	return SDL_APP_CONTINUE;
 }
