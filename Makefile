@@ -22,8 +22,10 @@ OBJ = ${SRC:%.c=${builddir}/%.o}
 DEP = ${OBJ:.o=.d}
 EXEC = ${builddir}/shader-viewer${EXT}
 
-SDL_DIR = libs/sdl
-SDL_BUILD_DIR = ${builddir}/libs/sdl
+SDL_DIR = libs/SDL
+SDL_BUILD_DIR = ${builddir}/libs/SDL
+SDL_TTF_DIR = libs/SDL_ttf
+SDL_TTF_BUILD_DIR = ${builddir}/libs/SDL_ttf
 LIBS =
 TRASH = ${builddir}/compile_commands.json
 
@@ -35,7 +37,8 @@ builddir = build-debug
 else
 builddir = build-release
 endif
-LIBS += ${SDL_BUILD_DIR}/libSDL3.so
+LIBS += ${SDL_BUILD_DIR}/libSDL3.so ${SDL_TTF_BUILD_DIR}/libSDL3_ttf.so
+prefix := LD_LIBRARY_PATH="${SDL_BUILD_DIR}:${SDL_TTF_BUILD_DIR}" ${prefix}
 else ifeq (${target},web)
 sanitize = false
 CC = emcc
@@ -48,19 +51,19 @@ LDFLAGS += --emrun
 else
 builddir = build-web-release
 endif
-LIBS += ${SDL_BUILD_DIR}/libSDL3.a
+LIBS += ${SDL_BUILD_DIR}/libSDL3.a ${SDL_TTF_BUILD_DIR}/libSDL3_ttf.a
 else
 $(error "Unknown target: ${target}")
 endif
 
 # SDL3
-CFLAGS += -I${SDL_DIR}/include
-LDFLAGS += -L${SDL_BUILD_DIR} -lSDL3 -lGLESv2
+CFLAGS += -I${SDL_DIR}/include -I${SDL_TTF_DIR}/include
+LDFLAGS += -L${SDL_BUILD_DIR} -L${SDL_TTF_BUILD_DIR} -lSDL3 -lSDL3_ttf -lGLESv2
 
 ifeq (${mode},debug)
 CFLAGS += -g3
 LDFLAGS += -g3
-SDL_CMAKE_FLAGS = -DCMAKE_BUILD_TYPE=Debug -DSDL_LIBC=ON
+SDL_CMAKE_FLAGS = -DCMAKE_BUILD_TYPE=Debug
 O = 0
 else ifeq (${mode},release)
 CFLAGS +=
@@ -121,6 +124,7 @@ clean:
 
 clean_sdl: clean
 	${RM} -r ${SDL_BUILD_DIR}
+	${RM} -r ${SDL_TTF_BUILD_DIR}
 	-if [[ -d ${builddir}/libs ]]; then rmdir ${builddir}/libs; fi
 
 .PHONY: all obj bear run clean clean_sdl
@@ -134,11 +138,20 @@ ${builddir}/%.o: %.c
 
 ${SDL_BUILD_DIR}/libSDL3.so:
 	cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR} ${SDL_CMAKE_FLAGS}
-	+make -C ${SDL_BUILD_DIR}
+	+cmake --build ${SDL_BUILD_DIR}
 
 ${SDL_BUILD_DIR}/libSDL3.a:
 	emcmake cmake -S ${SDL_DIR} -B ${SDL_BUILD_DIR} ${SDL_CMAKE_FLAGS}
 	+emmake make -C ${SDL_BUILD_DIR}
+
+${SDL_TTF_BUILD_DIR}/libSDL3_ttf.so: | ${SDL_BUILD_DIR}/libSDL3.so
+	cmake -S ${SDL_TTF_DIR} -B ${SDL_TTF_BUILD_DIR} ${SDL_CMAKE_FLAGS}
+	+cmake --build ${SDL_TTF_BUILD_DIR}
+
+${SDL_TTF_BUILD_DIR}/libSDL3_ttf.a: | ${SDL_BUILD_DIR}/libSDL3.a
+	#cd ${SDL_TTF_DIR}; ./external/download.sh
+	emcmake cmake -S ${SDL_TTF_DIR} -B ${SDL_TTF_BUILD_DIR} ${SDL_CMAKE_FLAGS} -DSDL3_DIR="${PWD}/${SDL_BUILD_DIR}" -DSDLTTF_VENDORED=True -DBUILD_SHARED_LIBS=OFF
+	+emmake make -C ${SDL_TTF_BUILD_DIR}
 
 ${builddir}/libs/dlopen/libdlopen.so: libs/dlopen/dlopen.c
 	@mkdir -p ${dir $@}

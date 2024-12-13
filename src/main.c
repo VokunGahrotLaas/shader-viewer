@@ -1,8 +1,10 @@
-// sdl3
+// SDL3
 #define SDL_MAIN_USE_CALLBACKS
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_opengles2.h>
+// SDL3_ttf
+#include <SDL3_ttf/SDL_ttf.h>
 // libc
 #include <errno.h>
 #include <stdio.h>
@@ -58,11 +60,19 @@ struct context
 	} value;
 };
 
+struct appstate;
+
 struct window
 {
+	struct appstate* app;
 	SDL_Window* window;
+	SDL_Renderer* renderer;
 	struct context ctx;
 	bool fullscreen;
+	double frames[60];
+	size_t frames_idx;
+	size_t frames_size;
+	bool display_info;
 	// uniforms
 	struct vec4 coord;
 	struct vec2 resolution;
@@ -73,6 +83,7 @@ struct window
 struct appstate
 {
 	struct window* window;
+	TTF_Font* font;
 };
 
 struct appstate* appstate_init(void);
@@ -80,7 +91,7 @@ void appstate_free(struct appstate* ctx);
 
 void window_draw(struct window* window);
 bool window_init_gles2(struct window* window, char const* vert_path, char const* frag_path);
-struct window* window_init(enum context_type type, char const* vert_path, char const* frag_path);
+struct window* window_init(struct appstate* app, enum context_type type, char const* vert_path, char const* frag_path);
 void window_free(struct window* window);
 
 GLuint gles2_compile_shader(char const* path, GLenum type);
@@ -108,70 +119,129 @@ void appstate_free(struct appstate* ctx)
 {
 	if (!ctx) return;
 	window_free(ctx->window);
+	TTF_CloseFont(ctx->font);
 	SDL_free(ctx);
 }
 
 void window_draw(struct window* window)
 {
+	double old_time = window->time;
 	window->time = SDL_GetTicks() / 1000.;
+	SDL_SetRenderDrawColor(window->renderer, 0x18, 0x18, 0x18, 0xff);
+	SDL_RenderClear(window->renderer);
+	SDL_FlushRenderer(window->renderer);
+	// needed for webgl
+	glDisableVertexAttribArray(1);
 	switch (window->ctx.type)
 	{
 	case CONTEXT_GLES2: gles2_draw_program(window); break;
 	};
+	// needed for webgl
+	glEnableVertexAttribArray(1);
+
+	// fps
+	window->frames_idx = (window->frames_idx + 1) % SDL_arraysize(window->frames);
+	window->frames[window->frames_idx] = window->time - old_time;
+	if (window->frames_size < SDL_arraysize(window->frames)) ++window->frames_size;
+	if (window->display_info)
+	{
+		double frames_sum = 0.;
+		for (size_t i = 0; i < window->frames_size; ++i)
+			frames_sum += window->frames[i];
+		double fps = 1 / (frames_sum / window->frames_size);
+		char fps_buffer[256];
+		snprintf(fps_buffer, sizeof(fps_buffer), "%.2f", fps);
+		SDL_Color fps_color = { 0xee, 0xee, 0xee, 0xcc };
+		SDL_Surface* fps_surface = TTF_RenderText_Solid(window->app->font, fps_buffer, 0, fps_color);
+		SDL_Texture* fps_texture = SDL_CreateTextureFromSurface(window->renderer, fps_surface);
+		SDL_FRect fps_rect = { 10, 10, fps_surface->w + 10, fps_surface->w + 10 };
+		if (!SDL_RenderTexture(window->renderer, fps_texture, NULL, &fps_rect)) SDL_LogError_GetError(SDL_RenderTexture);
+		SDL_DestroySurface(fps_surface);
+		SDL_DestroyTexture(fps_texture);
+	}
+
+	SDL_RenderPresent(window->renderer);
+}
+
+void gles2_draw_program(struct window* window)
+{
+	struct gles2_context* ctx = window->ctx.value.gles2;
+	SDL_GL_MakeCurrent(window->window, ctx->gl);
+
+	GLint old_prog = 0;
+	GLint old_vbo = 0;
+	glGetIntegerv(GL_CURRENT_PROGRAM, &old_prog);
+	glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &old_vbo);
+
+	glUseProgram(ctx->prog);
+	glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
+	glVertexAttribPointer(ctx->a_position, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+	glEnableVertexAttribArray(ctx->a_position);
+
+	gles2_update_program(window);
+
+	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+	glBindBuffer(GL_ARRAY_BUFFER, old_vbo);
+	glUseProgram(old_prog);
 }
 
 void window_update_resolution(struct window* window, int width, int height)
 {
 	if (window->resolution.x == width && window->resolution.y == height) return;
+	//printf("resize {%i, %i}\n", width, height);
 	window->resolution.x = width;
 	window->resolution.y = height;
-	switch (window->ctx.type)
-	{
-	case CONTEXT_GLES2: glViewport(0, 0, window->resolution.x, window->resolution.y); break;
-	};
+	SDL_Rect rect = { 0, 0, window->resolution.x, window->resolution.y };
+	SDL_SetRenderViewport(window->renderer, &rect);
 }
 
-bool window_init_gles2(struct window* window, char const* vert_path, char const* frag_path)
+bool window_init_gles2(struct window* window, [[maybe_unused]] char const* vert_path,
+					   [[maybe_unused]] char const* frag_path)
 {
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-	if (!(window->window = SDL_CreateWindow("Example SDL3 Program", SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT,
-											SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN)))
+	if (!(window->window =
+			  SDL_CreateWindow("Example SDL3 Program", SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT,
+							   SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS)))
 	{
 		SDL_LogError_GetError(SDL_CreateWindow);
 		return false;
 	}
 
-	int width = 0;
-	int height = 0;
-	if (!SDL_GetWindowSizeInPixels(window->window, &width, &height))
+	SDL_PropertiesID props = SDL_CreateProperties();
+	SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, "opengles2");
+	SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, window->window);
+	SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, SDL_RENDERER_VSYNC_ADAPTIVE);
+	window->renderer = SDL_CreateRendererWithProperties(props);
+	SDL_DestroyProperties(props);
+	if (!window->renderer)
 	{
-		SDL_LogError_GetError(SDL_GetWindowSizeInPixels);
+		SDL_LogError_GetError(SDL_CreateRendererWithProperties);
 		return false;
 	}
-	window->resolution = (struct vec2){ width, height };
+	SDL_FlushRenderer(window->renderer);
 
 	if (!(window->ctx.value.gles2 = gles2_init(window, vert_path, frag_path))) return false;
 
 	return window;
 }
 
-struct window* window_init(enum context_type type, char const* vert_path, char const* frag_path)
+struct window* window_init(struct appstate* app, enum context_type type, char const* vert_path, char const* frag_path)
 {
 	struct window* window = SDL_calloc(1, sizeof(*window));
 	if (!window) return NULL;
+	window->app = app;
 	window->ctx.type = type;
 	window->coord.x = 0;
 	window->coord.y = 0;
 	window->coord.z = 1;
 	window->coord.w = 80;
-	window->time = SDL_GetTicks();
+	window->time = SDL_GetTicks() / 1000.;
+	for (size_t i = 0; i < SDL_arraysize(window->frames); ++i)
+		window->frames[i] = 0.;
 
 	switch (type)
 	{
@@ -179,6 +249,15 @@ struct window* window_init(enum context_type type, char const* vert_path, char c
 		if (!window_init_gles2(window, vert_path, frag_path)) goto failure;
 		break;
 	};
+
+	int width = 0;
+	int height = 0;
+	if (!SDL_GetWindowSizeInPixels(window->window, &width, &height))
+	{
+		SDL_LogError_GetError(SDL_GetWindowSizeInPixels);
+		goto failure;
+	}
+	window->resolution = (struct vec2){ width, height };
 
 	return window;
 failure:
@@ -193,6 +272,7 @@ void window_free(struct window* window)
 	{
 	case CONTEXT_GLES2: gles2_free(window->ctx.value.gles2); break;
 	};
+	SDL_DestroyRenderer(window->renderer);
 	SDL_DestroyWindow(window->window);
 	SDL_free(window);
 }
@@ -202,20 +282,18 @@ struct gles2_context* gles2_init(struct window* window, char const* vert_path, c
 	struct gles2_context* ctx = SDL_calloc(1, sizeof(*ctx));
 	if (!ctx) return NULL;
 	ctx->window = window->window;
-	if (!(ctx->gl = SDL_GL_CreateContext(window->window)))
+	if (!(ctx->gl = SDL_GL_GetCurrentContext()))
 	{
 		SDL_LogError_GetError(SDL_GL_GetCurrentContext);
 		goto failure;
 	}
-	SDL_GL_MakeCurrent(window->window, ctx->gl);
-	glClearColor(0, 0, 0, 1);
-	glViewport(0, 0, window->resolution.x, window->resolution.y);
 	glEnable(GL_CULL_FACE); // cull face
 	glCullFace(GL_BACK); // cull back face
 	glFrontFace(GL_CW); // GL_CCW for counter clock-wise
 
 	ctx->prog = gles2_compile_program(vert_path, frag_path);
-	gles2_init_program(ctx);
+	if (!ctx->prog) goto failure;
+	if (!gles2_init_program(ctx)) goto failure;
 	return ctx;
 failure:
 	gles2_free(ctx);
@@ -303,6 +381,7 @@ GLuint gles2_compile_program(char const* vert_path, char const* frag_path)
 	}
 	glAttachShader(prog, vert);
 	glAttachShader(prog, frag);
+	glBindAttribLocation(prog, 0, "a_position");
 	glLinkProgram(prog);
 	glDetachShader(prog, vert);
 	glDetachShader(prog, frag);
@@ -325,11 +404,9 @@ GLuint gles2_compile_program(char const* vert_path, char const* frag_path)
 
 bool gles2_init_program(struct gles2_context* ctx)
 {
+	GLint old_prog = 0;
+	glGetIntegerv(GL_CURRENT_PROGRAM, &old_prog);
 	glUseProgram(ctx->prog);
-	GLfloat points[] = { 1, -1, -1, -1, -1, 1, 1, 1 };
-	glGenBuffers(1, &ctx->vbo);
-	glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(points), points, GL_STATIC_DRAW);
 
 	ctx->a_position = glGetAttribLocation(ctx->prog, "a_position");
 	if (ctx->a_position == -1)
@@ -337,13 +414,26 @@ bool gles2_init_program(struct gles2_context* ctx)
 		SDL_LogError_glGetError(glGetAttribLocation);
 		return false;
 	}
-	glVertexAttribPointer(ctx->a_position, 2, GL_FLOAT, GL_FALSE, 0, NULL);
 
 	ctx->u_resolution = glGetUniformLocation(ctx->prog, "u_resolution");
 	ctx->u_time = glGetUniformLocation(ctx->prog, "u_time");
 	ctx->u_mouse = glGetUniformLocation(ctx->prog, "u_mouse");
 	ctx->u_coord = glGetUniformLocation(ctx->prog, "u_coord");
-	glUseProgram(0);
+
+	GLfloat points[] = { 1, -1, -1, -1, -1, 1, 1, 1 };
+	glGenBuffers(1, &ctx->vbo);
+	if (ctx->vbo == GL_INVALID_VALUE)
+	{
+		SDL_LogError_glGetError(glGenBuffers);
+		return false;
+	}
+	GLint old_vbo = 0;
+	glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &old_vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(points), points, GL_STATIC_DRAW);
+	glBindBuffer(GL_ARRAY_BUFFER, old_vbo);
+
+	glUseProgram(old_prog);
 	return true;
 }
 
@@ -357,24 +447,6 @@ void gles2_update_program(struct window* window)
 		glUniform4f(ctx->u_coord, window->coord.x, window->coord.y, window->coord.z, window->coord.w);
 }
 
-void gles2_draw_program(struct window* window)
-{
-	struct gles2_context* ctx = window->ctx.value.gles2;
-	SDL_GL_MakeCurrent(window->window, ctx->gl);
-
-	glClear(GL_COLOR_BUFFER_BIT);
-
-	glUseProgram(ctx->prog);
-	gles2_update_program(window);
-	glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
-	glEnableVertexAttribArray(ctx->a_position);
-	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-	glDisableVertexAttribArray(ctx->a_position);
-	glUseProgram(0);
-
-	SDL_GL_SwapWindow(ctx->window);
-}
-
 void gles2_free(struct gles2_context* ctx)
 {
 	if (!ctx) return;
@@ -383,7 +455,6 @@ void gles2_free(struct gles2_context* ctx)
 		SDL_GL_MakeCurrent(ctx->window, ctx->gl);
 		if (ctx->prog) glDeleteProgram(ctx->prog);
 		if (ctx->vbo != GL_INVALID_VALUE) glDeleteBuffers(1, &ctx->vbo);
-		SDL_GL_DestroyContext(ctx->gl);
 	}
 	SDL_free(ctx);
 }
@@ -397,6 +468,8 @@ static int handle_key_event(struct window* window, SDL_Scancode key_code)
 	case SDL_SCANCODE_K: return SDL_APP_SUCCESS;
 	// toggle fullscreen
 	case SDL_SCANCODE_L: SDL_SetWindowFullscreen(window->window, !window->fullscreen); break;
+	// toggle display info
+	case SDL_SCANCODE_H: window->display_info = !window->display_info; break;
 	// coord x
 	case SDL_SCANCODE_LEFT: [[fallthrough]];
 	case SDL_SCANCODE_A: window->coord.x -= .1 / window->coord.z; break;
@@ -446,6 +519,12 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 		return SDL_APP_FAILURE;
 	}
 
+	if (!TTF_Init())
+	{
+		SDL_LogError_GetError(TTF_Init);
+		return SDL_APP_FAILURE;
+	}
+
 	const struct
 	{
 		char const* key;
@@ -468,11 +547,18 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 	struct appstate* ctx = *appstate = appstate_init();
 	if (!ctx) return SDL_APP_FAILURE;
 
-	ctx->window = window_init(CONTEXT_GLES2, vert_file, frag_file);
-	if (!ctx->window)
-		return SDL_APP_FAILURE;
+	ctx->window = window_init(ctx, CONTEXT_GLES2, vert_file, frag_file);
+	if (!ctx->window) return SDL_APP_FAILURE;
 
 	SDL_ShowWindow(ctx->window->window);
+
+	ctx->font = TTF_OpenFont("files/BigBlueTermPlusNerdFontMono-Regular.ttf", 24);
+	if (!ctx->font)
+	{
+		SDL_LogError_GetError(TTF_OpenFont);
+		return SDL_APP_FAILURE;
+	}
+
 	return SDL_APP_CONTINUE;
 }
 
@@ -493,6 +579,12 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 		if (event->key.windowID != SDL_GetWindowID(ctx->window->window)) break;
 		return handle_key_event(ctx->window, event->key.scancode);
 	case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+		//printf("pixel size changed %i %i\n", event->window.data1, event->window.data2);
+		if (event->window.windowID != SDL_GetWindowID(ctx->window->window)) break;
+		window_update_resolution(ctx->window, event->window.data1, event->window.data2);
+		break;
+	case SDL_EVENT_WINDOW_RESIZED:
+		//printf("resized %i %i\n", event->window.data1, event->window.data2);
 		if (event->window.windowID != SDL_GetWindowID(ctx->window->window)) break;
 		window_update_resolution(ctx->window, event->window.data1, event->window.data2);
 		break;
@@ -505,14 +597,16 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 		}
 		break;
 	case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
-		if (event->motion.windowID != SDL_GetWindowID(ctx->window->window)) break;
+		if (event->window.windowID != SDL_GetWindowID(ctx->window->window)) break;
+		//printf("fullscreen enter %i %i\n", event->window.data1, event->window.data2);
 		ctx->window->fullscreen = true;
 		break;
 	case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
-		if (event->motion.windowID != SDL_GetWindowID(ctx->window->window)) break;
+		if (event->window.windowID != SDL_GetWindowID(ctx->window->window)) break;
+		//printf("fullscreen leave %i %i\n", event->window.data1, event->window.data2);
 		ctx->window->fullscreen = false;
 		break;
-	default: break;
+	default: /*printf("unknown event %i %i %i\n", event->window.type, event->window.data1, event->window.data2);*/ break;
 	}
 	return SDL_APP_CONTINUE;
 }
