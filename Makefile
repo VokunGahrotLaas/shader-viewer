@@ -36,6 +36,8 @@ DLLS =
 TRASH = ${builddir}${SEP}compile_commands.json
 
 ifeq (${target},gnu)
+SEP = /
+SEPSH = /
 CC = gcc
 OUTEXT =
 ifeq (${mode},debug)
@@ -47,6 +49,8 @@ LIBS += ${SDL_BUILD_DIR}/libSDL3.so ${SDL_TTF_BUILD_DIR}/libSDL3_ttf.so
 prefix := LD_LIBRARY_PATH="${SDL_BUILD_DIR}:${SDL_TTF_BUILD_DIR}" ${prefix}
 
 else ifeq (${target},msvc)
+SEP = \${empty}
+SEPSH = \\
 sanitize = false
 lto = false
 CC = cl.exe /nologo
@@ -60,6 +64,8 @@ LIBS += ${SDL_BUILD_DIR}${SEP}Release${SEP}SDL3.dll ${SDL_TTF_BUILD_DIR}${SEP}Re
 endif
 
 else ifeq (${target},web)
+SEP = /
+SEPSH = /
 sanitize = false
 CC = emcc
 OUTEXT = .html
@@ -80,8 +86,6 @@ endif
 # flags
 ifeq (${target},msvc)
 std = clatest
-SEP = \${empty}
-SEPSH = \\
 OBJEXT = .obj
 OUTARG = /Fe:
 OBJARG = /c /Fo:
@@ -117,13 +121,10 @@ LDFLAGS += /libpath:${SDL_BUILD_DIR}/Debug /libpath:${SDL_TTF_BUILD_DIR}/Debug
 else
 LDFLAGS += /libpath:${SDL_BUILD_DIR}/Release /libpath:${SDL_TTF_BUILD_DIR}/Release
 endif
-LDFLAGS += /libpath:libs${SEP}angle
 DLLS += ${builddir}${SEP}SDL3.dll ${builddir}${SEP}SDL3_ttf.dll
 
 else # gnu-like
 std = gnu23
-SEP = /
-SEPSH = /
 OBJEXT = .o
 OUTARG = -o
 OBJARG = -c -o
@@ -134,7 +135,7 @@ LDFLAGS += -O$O
 
 #SDL3
 CPPFLAGS += -I${SDL_DIR}/include -I${SDL_TTF_DIR}/include
-LDFLAGS += -L${SDL_BUILD_DIR} -L${SDL_TTF_BUILD_DIR} -lSDL3 -lSDL3_ttf -lGLESv2
+LDFLAGS += -L${SDL_BUILD_DIR} -L${SDL_TTF_BUILD_DIR} -lSDL3 -lSDL3_ttf
 
 ifeq (${mode},debug)
 CFLAGS += -g3
