@@ -2,7 +2,6 @@
 #define SDL_MAIN_USE_CALLBACKS
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
-#include <SDL3/SDL_opengles2.h>
 // SDL3_ttf
 #include <SDL3_ttf/SDL_ttf.h>
 // libc
@@ -10,14 +9,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+// shader-viewer
+#include "gles2.h"
+
+#ifdef _WIN32
+#	pragma comment(lib, "SDL3.lib")
+#	pragma comment(lib, "SDL3_ttf.lib")
+#	define SEP "\\"
+#else
+#	define SEP "/"
+#endif
 
 #define SDL_WINDOW_WIDTH 1280
 #define SDL_WINDOW_HEIGHT 720
 
+#define SDL_DEFAULT_VERT "files" SEP "base.vert"
+#define SDL_DEFAULT_FRAG "files" SEP "mandelbrot.frag"
+#define SDL_DEFAULT_FONT "files" SEP "BigBlueTermPlusNerdFontMono-Regular.ttf"
+
 #define SDL_LogError_(...) SDL_LogError(SDL_LOG_CATEGORY_ERROR, __VA_ARGS__)
 #define SDL_LogError_GetError(F) SDL_LogError_(#F " failed: %s\n", SDL_GetError())
 #define SDL_LogError_strerror(F) SDL_LogError_(#F " failed: %s\n", strerror(errno))
-#define SDL_LogError_glGetError(F) SDL_LogError_(#F " failed: %x\n", glGetError())
+#define SDL_LogError_glGetError(F) SDL_LogError_(#F " failed: %x\n", ctx->glGetError())
 
 #define SDL_LogInfo_(...) SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, __VA_ARGS__)
 
@@ -46,6 +59,8 @@ struct gles2_context
 	GLint u_time;
 	GLint u_mouse;
 	GLint u_coord;
+
+	GL_DYNLOAD_ATTRS();
 };
 
 enum context_type
@@ -98,8 +113,8 @@ bool window_init_gles2(struct window* window, char const* vert_path, char const*
 struct window* window_init(struct appstate* app, enum context_type type, char const* vert_path, char const* frag_path);
 void window_free(struct window* window);
 
-GLuint gles2_compile_shader(char const* path, GLenum type);
-GLuint gles2_compile_program(char const* vert_path, char const* frag_path);
+GLuint gles2_compile_shader(struct gles2_context* ctx, char const* path, GLenum type);
+GLuint gles2_compile_program(struct gles2_context* ctx, char const* vert_path, char const* frag_path);
 bool gles2_init_program(struct gles2_context* ctx);
 void gles2_update_program(struct window* window);
 void gles2_draw_program(struct window* window);
@@ -135,13 +150,13 @@ void window_draw(struct window* window)
 	SDL_RenderClear(window->renderer);
 	SDL_FlushRenderer(window->renderer);
 	// needed for webgl
-	glDisableVertexAttribArray(1);
+	window->ctx.value.gles2->glDisableVertexAttribArray(1);
 	switch (window->ctx.type)
 	{
 	case CONTEXT_GLES2: gles2_draw_program(window); break;
 	};
 	// needed for webgl
-	glEnableVertexAttribArray(1);
+	window->ctx.value.gles2->glEnableVertexAttribArray(1);
 
 	// fps
 	window->frames_idx = (window->frames_idx + 1) % SDL_arraysize(window->frames);
@@ -159,7 +174,8 @@ void window_draw(struct window* window)
 		SDL_Surface* fps_surface = TTF_RenderText_Solid(window->app->font, fps_buffer, 0, fps_color);
 		SDL_Texture* fps_texture = SDL_CreateTextureFromSurface(window->renderer, fps_surface);
 		SDL_FRect fps_rect = { 10, 10, fps_surface->w + 10, fps_surface->w + 10 };
-		if (!SDL_RenderTexture(window->renderer, fps_texture, NULL, &fps_rect)) SDL_LogError_GetError(SDL_RenderTexture);
+		if (!SDL_RenderTexture(window->renderer, fps_texture, NULL, &fps_rect))
+			SDL_LogError_GetError(SDL_RenderTexture);
 		SDL_DestroySurface(fps_surface);
 		SDL_DestroyTexture(fps_texture);
 	}
@@ -174,20 +190,20 @@ void gles2_draw_program(struct window* window)
 
 	GLint old_prog = 0;
 	GLint old_vbo = 0;
-	glGetIntegerv(GL_CURRENT_PROGRAM, &old_prog);
-	glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &old_vbo);
+	ctx->glGetIntegerv(GL_CURRENT_PROGRAM, &old_prog);
+	ctx->glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &old_vbo);
 
-	glUseProgram(ctx->prog);
-	glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
-	glVertexAttribPointer(ctx->a_position, 2, GL_FLOAT, GL_FALSE, 0, NULL);
-	glEnableVertexAttribArray(ctx->a_position);
+	ctx->glUseProgram(ctx->prog);
+	ctx->glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
+	ctx->glVertexAttribPointer(ctx->a_position, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+	ctx->glEnableVertexAttribArray(ctx->a_position);
 
 	gles2_update_program(window);
 
-	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	ctx->glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
-	glBindBuffer(GL_ARRAY_BUFFER, old_vbo);
-	glUseProgram(old_prog);
+	ctx->glBindBuffer(GL_ARRAY_BUFFER, old_vbo);
+	ctx->glUseProgram(old_prog);
 }
 
 void window_update_resolution(struct window* window, int width, int height)
@@ -207,7 +223,7 @@ bool window_init_gles2(struct window* window, [[maybe_unused]] char const* vert_
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 
 	if (!(window->window =
-			  SDL_CreateWindow("Example SDL3 Program", SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT,
+			  SDL_CreateWindow("shader-viewer", SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT,
 							   SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS)))
 	{
 		SDL_LogError_GetError(SDL_CreateWindow);
@@ -290,11 +306,14 @@ struct gles2_context* gles2_init(struct window* window, char const* vert_path, c
 		SDL_LogError_GetError(SDL_GL_GetCurrentContext);
 		goto failure;
 	}
-	glEnable(GL_CULL_FACE); // cull face
-	glCullFace(GL_BACK); // cull back face
-	glFrontFace(GL_CW); // GL_CCW for counter clock-wise
 
-	ctx->prog = gles2_compile_program(vert_path, frag_path);
+	GL_DYNLOAD_LOADS();
+
+	ctx->glEnable(GL_CULL_FACE); // cull face
+	ctx->glCullFace(GL_BACK); // cull back face
+	ctx->glFrontFace(GL_CW); // GL_CCW for counter clock-wise
+
+	ctx->prog = gles2_compile_program(ctx, vert_path, frag_path);
 	if (!ctx->prog) goto failure;
 	if (!gles2_init_program(ctx)) goto failure;
 	return ctx;
@@ -303,7 +322,7 @@ failure:
 	return NULL;
 }
 
-GLuint gles2_compile_shader(char const* path, GLenum type)
+GLuint gles2_compile_shader(struct gles2_context* ctx, char const* path, GLenum type)
 {
 	FILE* file = fopen(path, "rb");
 	if (!file)
@@ -345,19 +364,19 @@ GLuint gles2_compile_shader(char const* path, GLenum type)
 	}
 	fclose(file);
 	buf[size] = '\0';
-	GLuint shad = glCreateShader(type);
+	GLuint shad = ctx->glCreateShader(type);
 	GLchar const* cbuf = buf;
-	glShaderSource(shad, 1, &cbuf, NULL);
-	glCompileShader(shad);
+	ctx->glShaderSource(shad, 1, &cbuf, NULL);
+	ctx->glCompileShader(shad);
 	SDL_free(buf);
 	GLint success;
-	glGetShaderiv(shad, GL_COMPILE_STATUS, &success);
+	ctx->glGetShaderiv(shad, GL_COMPILE_STATUS, &success);
 	if (!success)
 	{
 		GLsizei errsize = 0;
-		glGetShaderiv(shad, GL_INFO_LOG_LENGTH, &errsize);
+		ctx->glGetShaderiv(shad, GL_INFO_LOG_LENGTH, &errsize);
 		char* errbuf = calloc(errsize + 1, sizeof(char));
-		glGetShaderInfoLog(shad, errsize, NULL, errbuf);
+		ctx->glGetShaderInfoLog(shad, errsize, NULL, errbuf);
 		SDL_LogError_("shader program compilation failed: %s", errbuf);
 		free(errbuf);
 		return 0;
@@ -365,38 +384,38 @@ GLuint gles2_compile_shader(char const* path, GLenum type)
 	return shad;
 }
 
-GLuint gles2_compile_program(char const* vert_path, char const* frag_path)
+GLuint gles2_compile_program(struct gles2_context* ctx, char const* vert_path, char const* frag_path)
 {
-	GLuint vert = gles2_compile_shader(vert_path, GL_VERTEX_SHADER);
+	GLuint vert = gles2_compile_shader(ctx, vert_path, GL_VERTEX_SHADER);
 	if (!vert) return 0;
-	GLuint frag = gles2_compile_shader(frag_path, GL_FRAGMENT_SHADER);
+	GLuint frag = gles2_compile_shader(ctx, frag_path, GL_FRAGMENT_SHADER);
 	if (!frag)
 	{
-		glDeleteShader(vert);
+		ctx->glDeleteShader(vert);
 		return 0;
 	}
-	GLuint prog = glCreateProgram();
+	GLuint prog = ctx->glCreateProgram();
 	if (!prog)
 	{
-		glDeleteShader(vert);
-		glDeleteShader(frag);
+		ctx->glDeleteShader(vert);
+		ctx->glDeleteShader(frag);
 		return 0;
 	}
-	glAttachShader(prog, vert);
-	glAttachShader(prog, frag);
-	glLinkProgram(prog);
-	glDetachShader(prog, vert);
-	glDetachShader(prog, frag);
-	glDeleteShader(vert);
-	glDeleteShader(frag);
+	ctx->glAttachShader(prog, vert);
+	ctx->glAttachShader(prog, frag);
+	ctx->glLinkProgram(prog);
+	ctx->glDetachShader(prog, vert);
+	ctx->glDetachShader(prog, frag);
+	ctx->glDeleteShader(vert);
+	ctx->glDeleteShader(frag);
 	GLint success;
-	glGetProgramiv(prog, GL_LINK_STATUS, &success);
+	ctx->glGetProgramiv(prog, GL_LINK_STATUS, &success);
 	if (!success)
 	{
 		GLsizei errsize = 0;
-		glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &errsize);
+		ctx->glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &errsize);
 		char* errbuf = calloc(errsize + 1, sizeof(char));
-		glGetProgramInfoLog(prog, errsize, NULL, errbuf);
+		ctx->glGetProgramInfoLog(prog, errsize, NULL, errbuf);
 		SDL_LogError_("shader program linking failed: %s", errbuf);
 		free(errbuf);
 		return 0;
@@ -407,46 +426,46 @@ GLuint gles2_compile_program(char const* vert_path, char const* frag_path)
 bool gles2_init_program(struct gles2_context* ctx)
 {
 	GLint old_prog = 0;
-	glGetIntegerv(GL_CURRENT_PROGRAM, &old_prog);
-	glUseProgram(ctx->prog);
+	ctx->glGetIntegerv(GL_CURRENT_PROGRAM, &old_prog);
+	ctx->glUseProgram(ctx->prog);
 
-	ctx->a_position = glGetAttribLocation(ctx->prog, "a_position");
+	ctx->a_position = ctx->glGetAttribLocation(ctx->prog, "a_position");
 	if (ctx->a_position == -1)
 	{
 		SDL_LogError_glGetError(glGetAttribLocation);
 		return false;
 	}
 
-	ctx->u_resolution = glGetUniformLocation(ctx->prog, "u_resolution");
-	ctx->u_time = glGetUniformLocation(ctx->prog, "u_time");
-	ctx->u_mouse = glGetUniformLocation(ctx->prog, "u_mouse");
-	ctx->u_coord = glGetUniformLocation(ctx->prog, "u_coord");
+	ctx->u_resolution = ctx->glGetUniformLocation(ctx->prog, "u_resolution");
+	ctx->u_time = ctx->glGetUniformLocation(ctx->prog, "u_time");
+	ctx->u_mouse = ctx->glGetUniformLocation(ctx->prog, "u_mouse");
+	ctx->u_coord = ctx->glGetUniformLocation(ctx->prog, "u_coord");
 
 	GLfloat points[] = { 1, -1, -1, -1, -1, 1, 1, 1 };
-	glGenBuffers(1, &ctx->vbo);
+	ctx->glGenBuffers(1, &ctx->vbo);
 	if (ctx->vbo == GL_INVALID_VALUE)
 	{
 		SDL_LogError_glGetError(glGenBuffers);
 		return false;
 	}
 	GLint old_vbo = 0;
-	glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &old_vbo);
-	glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(points), points, GL_STATIC_DRAW);
-	glBindBuffer(GL_ARRAY_BUFFER, old_vbo);
+	ctx->glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &old_vbo);
+	ctx->glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
+	ctx->glBufferData(GL_ARRAY_BUFFER, sizeof(points), points, GL_STATIC_DRAW);
+	ctx->glBindBuffer(GL_ARRAY_BUFFER, old_vbo);
 
-	glUseProgram(old_prog);
+	ctx->glUseProgram(old_prog);
 	return true;
 }
 
 void gles2_update_program(struct window* window)
 {
 	struct gles2_context* ctx = window->ctx.value.gles2;
-	if (ctx->u_resolution != -1) glUniform2f(ctx->u_resolution, window->resolution.x, window->resolution.y);
-	if (ctx->u_time != -1) glUniform1f(ctx->u_time, window->time);
-	if (ctx->u_mouse != -1) glUniform2f(ctx->u_mouse, window->mouse.x, window->mouse.y);
+	if (ctx->u_resolution != -1) ctx->glUniform2f(ctx->u_resolution, window->resolution.x, window->resolution.y);
+	if (ctx->u_time != -1) ctx->glUniform1f(ctx->u_time, window->time);
+	if (ctx->u_mouse != -1) ctx->glUniform2f(ctx->u_mouse, window->mouse.x, window->mouse.y);
 	if (ctx->u_coord != -1)
-		glUniform4f(ctx->u_coord, window->coord.x, window->coord.y, window->coord.z, window->coord.w);
+		ctx->glUniform4f(ctx->u_coord, window->coord.x, window->coord.y, window->coord.z, window->coord.w);
 }
 
 void gles2_free(struct gles2_context* ctx)
@@ -455,8 +474,8 @@ void gles2_free(struct gles2_context* ctx)
 	if (ctx->gl)
 	{
 		SDL_GL_MakeCurrent(ctx->window, ctx->gl);
-		if (ctx->prog) glDeleteProgram(ctx->prog);
-		if (ctx->vbo != GL_INVALID_VALUE) glDeleteBuffers(1, &ctx->vbo);
+		if (ctx->prog) ctx->glDeleteProgram(ctx->prog);
+		if (ctx->vbo != GL_INVALID_VALUE) ctx->glDeleteBuffers(1, &ctx->vbo);
 	}
 	SDL_free(ctx);
 }
@@ -506,7 +525,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 		return SDL_APP_FAILURE;
 	}
 
-	if (!SDL_SetAppMetadata("Example SDL3 Program", "1.0.0", "fr.vokunaav.sdl3"))
+	if (!SDL_SetAppMetadata("shader-viewer", "1.0.0", "fr.vokunaav.shader-viewer"))
 	{
 		SDL_LogError_GetError(SDL_SetAppMetadata);
 		return SDL_APP_FAILURE;
@@ -546,15 +565,15 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 	struct appstate* ctx = *appstate = appstate_init();
 	if (!ctx) return SDL_APP_FAILURE;
 
-	ctx->vert_path = argc >= 3 ? argv[2] : "files/base.vert";
-	ctx->frag_path = argc >= 2 ? argv[1] : "files/mandelbrot.frag";
+	ctx->vert_path = argc >= 3 ? argv[2] : SDL_DEFAULT_VERT;
+	ctx->frag_path = argc >= 2 ? argv[1] : SDL_DEFAULT_FRAG;
 
 	ctx->window = window_init(ctx, CONTEXT_GLES2, ctx->vert_path, ctx->frag_path);
 	if (!ctx->window) return SDL_APP_FAILURE;
 
 	SDL_ShowWindow(ctx->window->window);
 
-	ctx->font = TTF_OpenFont("files/BigBlueTermPlusNerdFontMono-Regular.ttf", 24);
+	ctx->font = TTF_OpenFont(SDL_DEFAULT_FONT, 24);
 	if (!ctx->font)
 	{
 		SDL_LogError_GetError(TTF_OpenFont);
@@ -611,13 +630,13 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 		SDL_FlushRenderer(ctx->window->renderer);
 		SDL_GL_MakeCurrent(gl->window, gl->gl);
 		// needed for webgl
-		glDisableVertexAttribArray(1);
-		if (gl->prog) glDeleteProgram(gl->prog);
-		if (gl->vbo != GL_INVALID_VALUE) glDeleteBuffers(1, &gl->vbo);
-		gl->prog = gles2_compile_program(ctx->vert_path, event->drop.data);
+		ctx->window->ctx.value.gles2->glDisableVertexAttribArray(1);
+		if (gl->prog) ctx->window->ctx.value.gles2->glDeleteProgram(gl->prog);
+		if (gl->vbo != GL_INVALID_VALUE) ctx->window->ctx.value.gles2->glDeleteBuffers(1, &gl->vbo);
+		gl->prog = gles2_compile_program(gl, ctx->vert_path, event->drop.data);
 		gles2_init_program(gl);
 		// needed for webgl
-		glEnableVertexAttribArray(1);
+		ctx->window->ctx.value.gles2->glEnableVertexAttribArray(1);
 		break;
 	default: break;
 	}
