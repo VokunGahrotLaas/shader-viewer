@@ -39,6 +39,9 @@ struct gles2_context
 {
 	SDL_Window* window;
 	SDL_GLContext gl;
+	GLuint framebuffer;
+	GLuint texture;
+	SDL_Surface* surface;
 	GLuint prog;
 	GLuint vbo;
 	GLint a_position;
@@ -94,7 +97,6 @@ struct appstate* appstate_init(void);
 void appstate_free(struct appstate* ctx);
 
 void window_draw(struct window* window);
-bool window_init_gles2(struct window* window, char const* vert_path, char const* frag_path);
 struct window* window_init(struct appstate* app, enum context_type type, char const* vert_path, char const* frag_path);
 void window_free(struct window* window);
 
@@ -103,7 +105,7 @@ GLuint gles2_compile_program(char const* vert_path, char const* frag_path);
 bool gles2_init_program(struct gles2_context* ctx);
 void gles2_update_program(struct window* window);
 void gles2_draw_program(struct window* window);
-struct gles2_context* gles2_init(struct window* window, char const* vert_path, char const* frag_path);
+struct gles2_context* gles2_init(char const* vert_path, char const* frag_path);
 void gles2_free(struct gles2_context* ctx);
 
 static int handle_key_event(struct window* window, SDL_Scancode key_code);
@@ -133,15 +135,12 @@ void window_draw(struct window* window)
 	window->time = SDL_GetTicks() / 1000.;
 	SDL_SetRenderDrawColor(window->renderer, 0x18, 0x18, 0x18, 0xff);
 	SDL_RenderClear(window->renderer);
-	SDL_FlushRenderer(window->renderer);
-	// needed for webgl
-	glDisableVertexAttribArray(1);
+
+	// shader
 	switch (window->ctx.type)
 	{
 	case CONTEXT_GLES2: gles2_draw_program(window); break;
 	};
-	// needed for webgl
-	glEnableVertexAttribArray(1);
 
 	// fps
 	window->frames_idx = (window->frames_idx + 1) % SDL_arraysize(window->frames);
@@ -159,7 +158,8 @@ void window_draw(struct window* window)
 		SDL_Surface* fps_surface = TTF_RenderText_Solid(window->app->font, fps_buffer, 0, fps_color);
 		SDL_Texture* fps_texture = SDL_CreateTextureFromSurface(window->renderer, fps_surface);
 		SDL_FRect fps_rect = { 10, 10, fps_surface->w + 10, fps_surface->w + 10 };
-		if (!SDL_RenderTexture(window->renderer, fps_texture, NULL, &fps_rect)) SDL_LogError_GetError(SDL_RenderTexture);
+		if (!SDL_RenderTexture(window->renderer, fps_texture, NULL, &fps_rect))
+			SDL_LogError_GetError(SDL_RenderTexture);
 		SDL_DestroySurface(fps_surface);
 		SDL_DestroyTexture(fps_texture);
 	}
@@ -170,12 +170,19 @@ void window_draw(struct window* window)
 void gles2_draw_program(struct window* window)
 {
 	struct gles2_context* ctx = window->ctx.value.gles2;
-	SDL_GL_MakeCurrent(window->window, ctx->gl);
+	SDL_GL_MakeCurrent(ctx->window, ctx->gl);
 
 	GLint old_prog = 0;
 	GLint old_vbo = 0;
 	glGetIntegerv(GL_CURRENT_PROGRAM, &old_prog);
 	glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &old_vbo);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, ctx->framebuffer);
+	glBindTexture(GL_TEXTURE_2D, ctx->texture);
+
+	glViewport(0, 0, window->resolution.x, window->resolution.y);
+	glClearColor(0x18 / 255., 0x18 / 255., 0x18 / 255., 1);
+	glClear(GL_COLOR_BUFFER_BIT);
 
 	glUseProgram(ctx->prog);
 	glBindBuffer(GL_ARRAY_BUFFER, ctx->vbo);
@@ -188,6 +195,11 @@ void gles2_draw_program(struct window* window)
 
 	glBindBuffer(GL_ARRAY_BUFFER, old_vbo);
 	glUseProgram(old_prog);
+
+	glReadPixels(0, 0, window->resolution.x, window->resolution.y, GL_RGBA, GL_UNSIGNED_BYTE, ctx->surface->pixels);
+	SDL_Texture* texture = SDL_CreateTextureFromSurface(window->renderer, ctx->surface);
+	SDL_RenderTexture(window->renderer, texture, NULL, NULL);
+	SDL_DestroyTexture(texture);
 }
 
 void window_update_resolution(struct window* window, int width, int height)
@@ -197,39 +209,9 @@ void window_update_resolution(struct window* window, int width, int height)
 	window->resolution.y = height;
 	SDL_Rect rect = { 0, 0, window->resolution.x, window->resolution.y };
 	SDL_SetRenderViewport(window->renderer, &rect);
-}
-
-bool window_init_gles2(struct window* window, [[maybe_unused]] char const* vert_path,
-					   [[maybe_unused]] char const* frag_path)
-{
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-
-	if (!(window->window =
-			  SDL_CreateWindow("Example SDL3 Program", SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT,
-							   SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS)))
-	{
-		SDL_LogError_GetError(SDL_CreateWindow);
-		return false;
-	}
-
-	SDL_PropertiesID props = SDL_CreateProperties();
-	SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, "opengles2");
-	SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, window->window);
-	SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, SDL_RENDERER_VSYNC_ADAPTIVE);
-	window->renderer = SDL_CreateRendererWithProperties(props);
-	SDL_DestroyProperties(props);
-	if (!window->renderer)
-	{
-		SDL_LogError_GetError(SDL_CreateRendererWithProperties);
-		return false;
-	}
-	SDL_FlushRenderer(window->renderer);
-
-	if (!(window->ctx.value.gles2 = gles2_init(window, vert_path, frag_path))) return false;
-
-	return window;
+	// SDL_FlushRenderer(window->renderer);
+	SDL_DestroySurface(window->ctx.value.gles2->surface);
+	window->ctx.value.gles2->surface = SDL_CreateSurface(width, height, SDL_PIXELFORMAT_RGBA32);
 }
 
 struct window* window_init(struct appstate* app, enum context_type type, char const* vert_path, char const* frag_path)
@@ -245,13 +227,28 @@ struct window* window_init(struct appstate* app, enum context_type type, char co
 	window->time = SDL_GetTicks() / 1000.;
 	for (size_t i = 0; i < SDL_arraysize(window->frames); ++i)
 		window->frames[i] = 0.;
+	window->renderer = NULL;
+	window->ctx.type = CONTEXT_GLES2;
+	window->ctx.value.gles2 = NULL;
 
-	switch (type)
+	if (!(window->window =
+			  SDL_CreateWindow("shader-viewer", SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT,
+							   SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS)))
 	{
-	case CONTEXT_GLES2:
-		if (!window_init_gles2(window, vert_path, frag_path)) goto failure;
-		break;
-	};
+		SDL_LogError_GetError(SDL_CreateWindow);
+		goto failure;
+	}
+
+	SDL_PropertiesID props = SDL_CreateProperties();
+	SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, window->window);
+	SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, SDL_RENDERER_VSYNC_ADAPTIVE);
+	window->renderer = SDL_CreateRendererWithProperties(props);
+	SDL_DestroyProperties(props);
+	if (!window->renderer)
+	{
+		SDL_LogError_GetError(SDL_CreateRendererWithProperties);
+		goto failure;
+	}
 
 	int width = 0;
 	int height = 0;
@@ -261,6 +258,14 @@ struct window* window_init(struct appstate* app, enum context_type type, char co
 		goto failure;
 	}
 	window->resolution = (struct vec2){ width, height };
+
+	switch (type)
+	{
+	case CONTEXT_GLES2:
+		window->ctx.value.gles2 = gles2_init(vert_path, frag_path);
+		if (!window->ctx.value.gles2) goto failure;
+		break;
+	};
 
 	return window;
 failure:
@@ -280,19 +285,44 @@ void window_free(struct window* window)
 	SDL_free(window);
 }
 
-struct gles2_context* gles2_init(struct window* window, char const* vert_path, char const* frag_path)
+struct gles2_context* gles2_init(char const* vert_path, char const* frag_path)
 {
 	struct gles2_context* ctx = SDL_calloc(1, sizeof(*ctx));
 	if (!ctx) return NULL;
-	ctx->window = window->window;
-	if (!(ctx->gl = SDL_GL_GetCurrentContext()))
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+	ctx->window =
+		SDL_CreateWindow("shader-viewer-gles2", 0, 0, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS);
+	if (!ctx->window)
 	{
-		SDL_LogError_GetError(SDL_GL_GetCurrentContext);
+		SDL_LogError_GetError(SDL_CreateWindow);
+		return NULL;
+	}
+
+	if (!(ctx->gl = SDL_GL_CreateContext(ctx->window)))
+	{
+		SDL_LogError_GetError(SDL_GL_CreateContext);
 		goto failure;
 	}
-	glEnable(GL_CULL_FACE); // cull face
-	glCullFace(GL_BACK); // cull back face
-	glFrontFace(GL_CW); // GL_CCW for counter clock-wise
+	glEnable(GL_CULL_FACE);
+	glCullFace(GL_BACK);
+	glFrontFace(GL_CW);
+
+	ctx->framebuffer = 0;
+	glGenFramebuffers(1, &ctx->framebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, ctx->framebuffer);
+
+	ctx->texture = 0;
+	glGenTextures(1, &ctx->texture);
+	glBindTexture(GL_TEXTURE_2D, ctx->texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctx->texture, 0);
+
+	ctx->surface = SDL_CreateSurface(SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT, SDL_PIXELFORMAT_RGBA32);
 
 	ctx->prog = gles2_compile_program(vert_path, frag_path);
 	if (!ctx->prog) goto failure;
@@ -457,7 +487,12 @@ void gles2_free(struct gles2_context* ctx)
 		SDL_GL_MakeCurrent(ctx->window, ctx->gl);
 		if (ctx->prog) glDeleteProgram(ctx->prog);
 		if (ctx->vbo != GL_INVALID_VALUE) glDeleteBuffers(1, &ctx->vbo);
+		if (ctx->framebuffer != GL_INVALID_VALUE) glDeleteFramebuffers(1, &ctx->framebuffer);
+		if (ctx->texture != GL_INVALID_VALUE) glDeleteTextures(1, &ctx->texture);
+		SDL_GL_DestroyContext(ctx->gl);
 	}
+	SDL_DestroySurface(ctx->surface);
+	SDL_DestroyWindow(ctx->window);
 	SDL_free(ctx);
 }
 
