@@ -115,6 +115,7 @@ void window_free(struct window* window);
 
 GLuint gles2_compile_shader(struct gles2_context* ctx, char const* path, GLenum type);
 GLuint gles2_compile_program(struct gles2_context* ctx, char const* vert_path, char const* frag_path);
+bool gles2_recompile_program(struct gles2_context* ctx, char const* vert_path, char const* frag_path);
 bool gles2_init_program(struct gles2_context* ctx);
 void gles2_update_program(struct window* window);
 void gles2_draw_program(struct window* window);
@@ -146,17 +147,14 @@ void window_draw(struct window* window)
 {
 	double old_time = window->time;
 	window->time = SDL_GetTicks() / 1000.;
+
 	SDL_SetRenderDrawColor(window->renderer, 0x18, 0x18, 0x18, 0xff);
 	SDL_RenderClear(window->renderer);
 	SDL_FlushRenderer(window->renderer);
-	// needed for webgl
-	window->ctx.value.gles2->glDisableVertexAttribArray(1);
 	switch (window->ctx.type)
 	{
 	case CONTEXT_GLES2: gles2_draw_program(window); break;
 	};
-	// needed for webgl
-	window->ctx.value.gles2->glEnableVertexAttribArray(1);
 
 	// fps
 	window->frames_idx = (window->frames_idx + 1) % SDL_arraysize(window->frames);
@@ -188,6 +186,9 @@ void gles2_draw_program(struct window* window)
 	struct gles2_context* ctx = window->ctx.value.gles2;
 	SDL_GL_MakeCurrent(window->window, ctx->gl);
 
+	// needed for webgl
+	ctx->glDisableVertexAttribArray(1);
+
 	GLint old_prog = 0;
 	GLint old_vbo = 0;
 	ctx->glGetIntegerv(GL_CURRENT_PROGRAM, &old_prog);
@@ -204,6 +205,9 @@ void gles2_draw_program(struct window* window)
 
 	ctx->glBindBuffer(GL_ARRAY_BUFFER, old_vbo);
 	ctx->glUseProgram(old_prog);
+
+	// needed for webgl
+	ctx->glEnableVertexAttribArray(1);
 }
 
 void window_update_resolution(struct window* window, int width, int height)
@@ -211,8 +215,12 @@ void window_update_resolution(struct window* window, int width, int height)
 	if (window->resolution.x == width && window->resolution.y == height) return;
 	window->resolution.x = width;
 	window->resolution.y = height;
-	SDL_Rect rect = { 0, 0, window->resolution.x, window->resolution.y };
-	SDL_SetRenderViewport(window->renderer, &rect);
+	switch (window->ctx.type)
+	{
+		case CONTEXT_GLES2:
+			window->ctx.value.gles2->glViewport(0, 0, width, height);
+			break;
+	};
 }
 
 bool window_init_gles2(struct window* window, [[maybe_unused]] char const* vert_path,
@@ -423,6 +431,20 @@ GLuint gles2_compile_program(struct gles2_context* ctx, char const* vert_path, c
 	return prog;
 }
 
+bool gles2_recompile_program(struct gles2_context* ctx, char const* vert_path, char const* frag_path)
+{
+	SDL_GL_MakeCurrent(ctx->window, ctx->gl);
+	// needed for webgl
+	ctx->glDisableVertexAttribArray(1);
+	if (ctx->prog) ctx->glDeleteProgram(ctx->prog);
+	if (ctx->vbo != GL_INVALID_VALUE) ctx->glDeleteBuffers(1, &ctx->vbo);
+	ctx->prog = gles2_compile_program(ctx, vert_path, frag_path);
+	bool r = ctx->prog != 0 && gles2_init_program(ctx);
+	// needed for webgl
+	ctx->glEnableVertexAttribArray(1);
+	return r;
+}
+
 bool gles2_init_program(struct gles2_context* ctx)
 {
 	GLint old_prog = 0;
@@ -537,6 +559,9 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 		return SDL_APP_FAILURE;
 	}
 
+	for (int i = 0; i < SDL_GetNumRenderDrivers(); ++i)
+		SDL_LogInfo_("found driver: %s\n", SDL_GetRenderDriver(i));
+
 	if (!TTF_Init())
 	{
 		SDL_LogError_GetError(TTF_Init);
@@ -626,17 +651,9 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 	case SDL_EVENT_DROP_FILE:
 		if (event->drop.windowID != SDL_GetWindowID(ctx->window->window)) break;
 		SDL_LogInfo_("file dropped: %s\n", event->drop.data);
-		struct gles2_context* gl = ctx->window->ctx.value.gles2;
 		SDL_FlushRenderer(ctx->window->renderer);
-		SDL_GL_MakeCurrent(gl->window, gl->gl);
-		// needed for webgl
-		ctx->window->ctx.value.gles2->glDisableVertexAttribArray(1);
-		if (gl->prog) ctx->window->ctx.value.gles2->glDeleteProgram(gl->prog);
-		if (gl->vbo != GL_INVALID_VALUE) ctx->window->ctx.value.gles2->glDeleteBuffers(1, &gl->vbo);
-		gl->prog = gles2_compile_program(gl, ctx->vert_path, event->drop.data);
-		gles2_init_program(gl);
-		// needed for webgl
-		ctx->window->ctx.value.gles2->glEnableVertexAttribArray(1);
+		if (gles2_recompile_program(ctx->window->ctx.value.gles2, ctx->vert_path, event->drop.data))
+			SDL_LogError_("failed to compile fragment shader: %s\n", event->drop.data);
 		break;
 	default: break;
 	}

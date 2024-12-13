@@ -205,10 +205,10 @@ ${EXEC}: ${OBJ} | ${LIBS}
 	${CC} ${OUTARG} $@ $^ ${LDFLAGS}
 
 ${builddir}${SEPSH}%${OBJEXT}: %.c
-ifeq (${target},gnu)
-	mkdir -p ${dir $@}
-else ifeq (${target},msvc)
+ifeq (${target},msvc)
 	if not exist ${dir $@}${SEP} mkdir ${dir $@}
+else
+	mkdir -p ${dir $@}
 endif
 	${CC} ${CFLAGS} ${OBJARG} $@ $<
 
