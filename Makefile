@@ -8,6 +8,7 @@ args =
 target = gnu
 O = 0
 prefix =
+wallpaper = false
 
 empty :=
 define newline
@@ -47,6 +48,10 @@ builddir = build-gnu-release
 endif
 LIBS += ${SDL_BUILD_DIR}/libSDL3.so ${SDL_TTF_BUILD_DIR}/libSDL3_ttf.so
 prefix := LD_LIBRARY_PATH="${SDL_BUILD_DIR}:${SDL_TTF_BUILD_DIR}" ${prefix}
+ifeq (${wallpaper},true)
+CPPFLAGS += -DWALLPAPER
+LDFLAGS += -lX11
+endif
 
 else ifeq (${target},msvc)
 SEP = \${empty}

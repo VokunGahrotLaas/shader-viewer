@@ -1,9 +1,18 @@
-// SDL3
+// #define WALLPAPER
+//  SDL3
+#include <SDL3/SDL_init.h>
+#include <SDL3/SDL_properties.h>
+#include <SDL3/SDL_video.h>
 #define SDL_MAIN_USE_CALLBACKS
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 // SDL3_ttf
 #include <SDL3_ttf/SDL_ttf.h>
+// X11
+#ifdef WALLPAPER
+#	include <X11/Xlib.h>
+#	include <X11/Xatom.h>
+#endif
 // libc
 #include <errno.h>
 #include <stdio.h>
@@ -82,6 +91,10 @@ struct appstate;
 struct window
 {
 	struct appstate* app;
+#ifdef WALLPAPER
+	Display* x11_display;
+	Window x11_window;
+#endif
 	SDL_Window* window;
 	SDL_Renderer* renderer;
 	struct context ctx;
@@ -217,38 +230,95 @@ void window_update_resolution(struct window* window, int width, int height)
 	window->resolution.y = height;
 	switch (window->ctx.type)
 	{
-		case CONTEXT_GLES2:
-			window->ctx.value.gles2->glViewport(0, 0, width, height);
-			break;
+	case CONTEXT_GLES2: window->ctx.value.gles2->glViewport(0, 0, width, height); break;
 	};
 }
 
-bool window_init_gles2(struct window* window, [[maybe_unused]] char const* vert_path,
-					   [[maybe_unused]] char const* frag_path)
+bool window_init_gles2(struct window* window, char const* vert_path, char const* frag_path)
 {
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 
-	if (!(window->window =
-			  SDL_CreateWindow("shader-viewer", SDL_WINDOW_WIDTH, SDL_WINDOW_HEIGHT,
-							   SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS)))
+	SDL_PropertiesID window_props = SDL_CreateProperties();
+	if (window_props == 0)
 	{
-		SDL_LogError_GetError(SDL_CreateWindow);
+		SDL_LogError_GetError(SDL_CreateProperties);
 		return false;
 	}
 
-	SDL_PropertiesID props = SDL_CreateProperties();
-	SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, "opengles2");
-	SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, window->window);
-	SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, SDL_RENDERER_VSYNC_ADAPTIVE);
-	window->renderer = SDL_CreateRendererWithProperties(props);
-	SDL_DestroyProperties(props);
+	SDL_SetStringProperty(window_props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "shader-viewer");
+	SDL_SetBooleanProperty(window_props, SDL_PROP_WINDOW_CREATE_OPENGL_BOOLEAN, true);
+	SDL_SetBooleanProperty(window_props, SDL_PROP_WINDOW_CREATE_HIDDEN_BOOLEAN, true);
+	SDL_SetBooleanProperty(window_props, SDL_PROP_WINDOW_CREATE_BORDERLESS_BOOLEAN, true);
+
+#ifdef WALLPAPER
+	window->x11_display = XOpenDisplay(NULL);
+	if (window->x11_display == NULL)
+	{
+		SDL_LogError_strerror(XOpenDisplay);
+		return false;
+	}
+
+	Window x11_root = DefaultRootWindow(window->x11_display);
+
+	XWindowAttributes x11_root_attr;
+	XGetWindowAttributes(window->x11_display, x11_root, &x11_root_attr);
+
+	XSetWindowAttributes x11_window_attrs = { 0 };
+	x11_window_attrs.override_redirect = True;
+
+	window->x11_window =
+		XCreateWindow(window->x11_display, x11_root, 0, 0, x11_root_attr.width, x11_root_attr.height, 0,
+					  x11_root_attr.depth, InputOutput, x11_root_attr.visual, CWOverrideRedirect, &x11_window_attrs);
+	if (window->x11_window == 0)
+	{
+		SDL_LogError_strerror(XCreateWindow);
+		return false;
+	}
+
+	Atom XROOT_ID = XInternAtom(window->x11_display, "_XROOT_ID", True);
+	XChangeProperty(window->x11_display, window->x11_window, XROOT_ID, XA_WINDOW, 32, PropModeReplace,
+					(unsigned char*)&window->x11_window, 1);
+
+	Pixmap dummy = XCreatePixmap(window->x11_display, window->x11_window, 1, 1, x11_root_attr.depth);
+	Atom XROOTPMAP = XInternAtom(window->x11_display, "_XROOTPMAP_ID", True);
+	XChangeProperty(window->x11_display, window->x11_window, XROOTPMAP, XA_PIXMAP, 32, PropModeReplace,
+					(unsigned char*)&dummy, 1);
+
+	SDL_SetNumberProperty(window_props, SDL_PROP_WINDOW_CREATE_X11_WINDOW_NUMBER, window->x11_window);
+#else
+	SDL_SetBooleanProperty(window_props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
+	SDL_SetNumberProperty(window_props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, SDL_WINDOW_WIDTH);
+	SDL_SetNumberProperty(window_props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, SDL_WINDOW_HEIGHT);
+#endif
+
+	window->window = SDL_CreateWindowWithProperties(window_props);
+	SDL_DestroyProperties(window_props);
+	if (!window->window)
+	{
+		SDL_LogError_GetError(SDL_CreateWindowWithProperties);
+		return false;
+	}
+
+	SDL_PropertiesID renderer_props = SDL_CreateProperties();
+	if (window_props == 0)
+	{
+		SDL_LogError_GetError(SDL_CreateProperties);
+		return false;
+	}
+	SDL_SetStringProperty(renderer_props, SDL_PROP_RENDERER_CREATE_NAME_STRING, "opengles2");
+	SDL_SetPointerProperty(renderer_props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, window->window);
+	SDL_SetNumberProperty(renderer_props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, SDL_RENDERER_VSYNC_ADAPTIVE);
+
+	window->renderer = SDL_CreateRendererWithProperties(renderer_props);
+	SDL_DestroyProperties(renderer_props);
 	if (!window->renderer)
 	{
 		SDL_LogError_GetError(SDL_CreateRendererWithProperties);
 		return false;
 	}
+
 	SDL_FlushRenderer(window->renderer);
 
 	if (!(window->ctx.value.gles2 = gles2_init(window, vert_path, frag_path))) return false;
@@ -301,6 +371,10 @@ void window_free(struct window* window)
 	};
 	SDL_DestroyRenderer(window->renderer);
 	SDL_DestroyWindow(window->window);
+#ifdef WALLPAPER
+	if (window->window != 0) XDestroyWindow(window->x11_display, window->x11_window);
+	if (window->x11_display != NULL) XCloseDisplay(window->x11_display);
+#endif
 	SDL_free(window);
 }
 
@@ -597,6 +671,10 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 	if (!ctx->window) return SDL_APP_FAILURE;
 
 	SDL_ShowWindow(ctx->window->window);
+#ifdef WALLPAPER
+	XLowerWindow(ctx->window->x11_display, ctx->window->x11_window);
+	XFlush(ctx->window->x11_display);
+#endif
 
 	ctx->font = TTF_OpenFont(SDL_DEFAULT_FONT, 24);
 	if (!ctx->font)
@@ -665,4 +743,3 @@ void SDL_AppQuit(void* appstate, [[maybe_unused]] SDL_AppResult result)
 	struct appstate* ctx = appstate;
 	appstate_free(ctx);
 }
-
